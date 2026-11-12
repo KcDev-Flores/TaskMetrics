@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full bg-slate-950 text-slate-100">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TaskMetrics - Control de Sprints y Rendimiento</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/css/styles.css">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              400: '#34d399',
+              500: '#10b981',
+              600: '#059669',
+            }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="min-h-full flex flex-col font-sans antialiased bg-slate-950 text-slate-100">
+
+  <!-- =========================================================================
+       Pantalla de Login Limpia (Visible cuando NO hay sesión activa)
+       ========================================================================= -->
+  <div id="login-view-screen" class="min-h-screen flex items-center justify-center p-4 bg-slate-950">
+    <div class="w-full max-w-md bg-slate-900/90 border border-slate-800 rounded-3xl p-6 sm:p-10 shadow-2xl space-y-6 backdrop-blur">
+      
+      <!-- Logo y Título -->
+      <div class="text-center space-y-2">
+        <div class="w-14 h-14 mx-auto rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold text-2xl shadow-inner">
+          TM
+        </div>
+        <h1 class="text-2xl font-bold text-white tracking-tight">TaskMetrics</h1>
+        <p class="text-xs text-slate-400">Control de Sprints, Rendimiento y Ponderación de Ingresos</p>
+      </div>
+
+      <!-- Alerta de Error de Login -->
+      <div id="login-error-alert" class="hidden p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
+        <span>⚠️</span>
+        <span id="login-error-text" class="flex-1">Credenciales inválidas.</span>
+      </div>
+
+      <!-- Formulario de Acceso Directo -->
+      <form id="form-clean-login" onsubmit="event.preventDefault(); submitCleanLogin();" class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1.5">Correo Electrónico</label>
+          <input type="email" id="login-input-email" required autocomplete="email"
+                 class="w-full bg-slate-950 border border-slate-700/80 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                 placeholder="tu-correo@empresa.com">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1.5">Contraseña</label>
+          <input type="password" id="login-input-password" required autocomplete="current-password"
+                 class="w-full bg-slate-950 border border-slate-700/80 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                 placeholder="••••••••">
+        </div>
+
+        <button type="submit" id="btn-login-submit"
+                class="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white rounded-xl text-sm font-semibold transition shadow-lg shadow-emerald-950/50 flex items-center justify-center gap-2 mt-2">
+          <span id="btn-login-text">Iniciar Sesión</span>
+        </button>
+      </form>
+
+      <div class="pt-4 border-t border-slate-800/80 text-center">
+        <p class="text-[11px] text-slate-500">
+          🔒 Acceso restringido para Líderes y Administradores del equipo.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================================================================
+       Contenedor Principal de la App (Visible solo cuando HAY sesión activa)
+       ========================================================================= -->
+  <div id="app-main-layout" class="hidden min-h-screen flex-col">
+
+    <!-- =========================================================================
+         Navbar Superior (Navegación Global y Responsive)
+         ========================================================================= -->
+    <header class="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-40">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2 sm:gap-4">
+        
+        <!-- Logo y Título -->
+        <div class="flex items-center gap-2 sm:gap-3 shrink-0">
+          <div class="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold text-sm sm:text-base shadow-inner">
+            TM
+          </div>
+          <div>
+            <h1 class="text-sm sm:text-base font-semibold tracking-tight text-white leading-tight">TaskMetrics</h1>
+            <p class="text-[10px] text-slate-400 hidden md:block">Gestión de Sprints y Rendimiento</p>
+          </div>
+        </div>
+
+        <!-- Barra de Navegación Global (Tabs con Scroll horizontal en móvil) -->
+        <nav class="flex items-center gap-1 bg-slate-950/80 p-1 rounded-xl border border-slate-800 overflow-x-auto max-w-[55vw] sm:max-w-none">
+          <button onclick="switchTab('dashboard')" id="tab-btn-dashboard" class="nav-tab px-3 sm:px-4 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 text-white bg-slate-800 shadow-sm shrink-0">
+            <span>📊</span>
+            <span class="hidden xs:inline">Dashboard</span>
+          </button>
+          <button onclick="switchTab('tablero')" id="tab-btn-tablero" class="nav-tab px-3 sm:px-4 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 text-slate-400 hover:text-slate-200 shrink-0">
+            <span>📋</span>
+            <span class="hidden xs:inline">Tablero</span>
+          </button>
+          <button onclick="switchTab('rendimiento')" id="tab-btn-rendimiento" class="nav-tab px-3 sm:px-4 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 text-slate-400 hover:text-slate-200 shrink-0">
+            <span>🎯</span>
+            <span class="hidden xs:inline">Rendimiento</span>
+          </button>
+          <!-- Pestaña exclusiva para Admin -->
+          <button onclick="switchTab('usuarios')" id="tab-btn-usuarios" class="nav-tab hidden px-3 sm:px-4 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 text-slate-400 hover:text-slate-200 shrink-0">
+            <span>👥</span>
+            <span>Usuarios</span>
+          </button>
+        </nav>
+
+        <!-- Controles de Usuario y Actualizar -->
+        <div class="flex items-center gap-2 shrink-0">
+          <button onclick="loadDashboard()" class="p-1.5 sm:p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs border border-slate-700 transition" title="Actualizar datos">
+            🔄
+          </button>
+
+          <!-- Badge de Usuario con Rol Dinámico -->
+          <div id="user-badge" class="flex items-center gap-1.5 sm:gap-2 bg-slate-800/90 border border-slate-700/80 px-2 sm:px-3 py-1 rounded-xl text-xs">
+            <span id="user-role-badge" class="px-1.5 sm:px-2 py-0.5 rounded-md font-semibold text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">⭐ Líder</span>
+            <span id="user-name-display" class="font-medium text-slate-200 max-w-[80px] sm:max-w-[130px] truncate text-[11px] sm:text-xs">Usuario</span>
+            <button onclick="logout()" class="ml-1 text-slate-400 hover:text-rose-400 transition" title="Cerrar sesión">
+              🚪
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </header>
+
+    <!-- =========================================================================
+         Contenido de Vistas Separadas
+         ========================================================================= -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+
+      <!-- =======================================================================
+           VISTA 1: DASHBOARD (Resumen General del Proyecto)
+           ======================================================================= -->
+      <div id="view-dashboard" class="space-y-8">
+      
+      <!-- Fila Superior: Medidor de Asignaciones y KPIs Macro -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        <!-- Círculo Grande: % Total de Asignaciones Realizadas -->
+        <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between shadow-sm">
+          <div>
+            <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider block">Métrica Principal</span>
+            <h2 class="text-lg font-bold text-white mt-1">Asignaciones Realizadas</h2>
+            <p class="text-xs text-slate-400 mt-0.5">Porcentaje de tareas completadas respecto al total planificado.</p>
+          </div>
+
+          <div class="flex items-center justify-center my-6">
+            <div class="relative w-44 h-44">
+              <svg class="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
+                <path class="text-slate-800" stroke-width="3.5" stroke="currentColor" fill="none"
+                      d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                <path id="circle-global-progress" class="text-emerald-500 transition-all duration-1000 ease-out" stroke-width="3.5"
+                      stroke-dasharray="0, 100" stroke-linecap="round" stroke="currentColor" fill="none"
+                      d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+              </svg>
+              <div class="absolute inset-0 flex flex-col items-center justify-center text-center">
+                <span id="circle-global-pct" class="text-4xl font-black text-white tracking-tight">0%</span>
+                <span class="text-[11px] text-emerald-400 font-semibold uppercase tracking-wider mt-1">Eficacia Total</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3 pt-4 border-t border-slate-800/80 text-center">
+            <div class="bg-slate-950/60 rounded-xl p-3 border border-slate-800">
+              <span class="text-[11px] text-slate-400 block font-medium">Asignaciones Cerradas</span>
+              <span id="stat-completed-tasks" class="text-xl font-bold text-white font-mono mt-0.5 block">0</span>
+            </div>
+            <div class="bg-slate-950/60 rounded-xl p-3 border border-slate-800">
+              <span class="text-[11px] text-slate-400 block font-medium">Total Planificadas</span>
+              <span id="stat-assigned-tasks" class="text-xl font-bold text-slate-300 font-mono mt-0.5 block">0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4 Tarjetas de KPIs Generales -->
+        <div class="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4">
+          
+          <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between shadow-sm">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Ciclos de Desarrollo</span>
+              <span class="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 text-sm">⚡</span>
+            </div>
+            <div class="my-4">
+              <span id="kpi-sprints-count" class="text-3xl font-extrabold text-white tracking-tight">0</span>
+              <span class="text-xs text-slate-400 block mt-1">sprints dinámicos registrados</span>
+            </div>
+            <button onclick="switchTab('tablero')" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1 transition">
+              Ir al Tablero &rarr;
+            </button>
+          </div>
+
+          <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between shadow-sm">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Equipo de Desarrollo</span>
+              <span class="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 text-sm">👥</span>
+            </div>
+            <div class="my-4">
+              <span id="kpi-devs-count" class="text-3xl font-extrabold text-white tracking-tight">0</span>
+              <span class="text-xs text-slate-400 block mt-1">integrantes registrados</span>
+            </div>
+            <button onclick="switchTab('rendimiento')" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1 transition">
+              Ver Desempeño Individual &rarr;
+            </button>
+          </div>
+
+          <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between shadow-sm">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Equidad de Ingresos</span>
+              <span class="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 text-sm">⚖️</span>
+            </div>
+            <div class="my-4">
+              <span class="text-3xl font-extrabold text-emerald-400 tracking-tight">100.0%</span>
+              <span class="text-xs text-slate-400 block mt-1">distribución matemática exacta</span>
+            </div>
+            <span class="text-[11px] text-slate-500">Sin redondeo acumulativo</span>
+          </div>
+
+          <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 flex flex-col justify-between shadow-sm">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Estado del Proyecto</span>
+              <span class="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 text-sm">📈</span>
+            </div>
+            <div class="my-4">
+              <span id="kpi-project-status" class="text-2xl font-bold text-white tracking-tight">En Progreso</span>
+              <span class="text-xs text-slate-400 block mt-1">desarrollo del mod activo</span>
+            </div>
+            <span class="text-[11px] text-slate-500">Métricas actualizadas al día</span>
+          </div>
+
+        </div>
+
+      </div>
+
+      <!-- Resumen Rápido: Top Aportaciones del Equipo -->
+      <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-sm">
+        <div class="flex items-center justify-between pb-4 border-b border-slate-800">
+          <div>
+            <h2 class="text-base font-semibold text-white">Top Contribuciones en Ingresos</h2>
+            <p class="text-xs text-slate-400">Integrantes con mayor cuota de participación por tareas cerradas.</p>
+          </div>
+          <button onclick="switchTab('rendimiento')" class="text-xs text-emerald-400 hover:text-emerald-300 font-medium">
+            Ver todos los integrantes &rarr;
+          </button>
+        </div>
+
+        <div id="dashboard-top-contributors" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
+          <!-- Rellenado por JS -->
+        </div>
+      </div>
+
+    </div>
+
+    <!-- =======================================================================
+         VISTA 2: TABLERO (Gestión de Sprints y Matriz)
+         ======================================================================= -->
+    <div id="view-tablero" class="hidden space-y-8">
+
+      <!-- Barra de Acciones y Filtro del Tablero (AQUÍ ESTÁ EL BOTÓN DE ACCIONES) -->
+      <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4">
+        
+        <!-- Bloque de Acciones del Tablero -->
+        <div class="flex flex-wrap items-center gap-2">
+          
+          <!-- Botón Desplegable: Acciones -->
+          <div class="relative inline-block text-left" id="actions-dropdown-wrapper">
+            <button onclick="toggleActionsMenu()" type="button" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-medium text-xs sm:text-sm transition flex items-center gap-2 shadow-sm">
+              <span>⚙️ Acciones</span>
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+            </button>
+
+            <!-- Menú Flotante de Acciones -->
+            <div id="actions-menu" class="hidden absolute left-0 mt-2 w-64 rounded-xl bg-slate-900 border border-slate-800 shadow-2xl z-50 divide-y divide-slate-800/80 animate-in fade-in slide-in-from-top-2 duration-150">
+              <!-- Grupo: Sprint -->
+              <div class="py-2">
+                <span class="px-4 py-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">Sprint</span>
+                <button onclick="openModalCreateSprint()" class="w-full text-left px-4 py-2 text-xs text-slate-200 hover:bg-slate-800/80 flex items-center gap-2.5 transition">
+                  <span class="text-emerald-400 font-bold">➕</span> Agregar un nuevo sprint
+                </button>
+                <button onclick="openModalEditSprintSelect()" class="w-full text-left px-4 py-2 text-xs text-slate-200 hover:bg-slate-800/80 flex items-center gap-2.5 transition">
+                  <span class="text-amber-400">✏️</span> Editar un sprint
+                </button>
+                <button onclick="openModalDeleteSprintSelect()" class="w-full text-left px-4 py-2 text-xs text-rose-300 hover:bg-rose-950/40 flex items-center gap-2.5 transition">
+                  <span class="text-rose-400">🗑️</span> Eliminar un sprint
+                </button>
+              </div>
+
+              <!-- Grupo: Integrantes -->
+              <div class="py-2">
+                <span class="px-4 py-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">Integrantes</span>
+                <button onclick="openModalAddDev()" class="w-full text-left px-4 py-2 text-xs text-slate-200 hover:bg-slate-800/80 flex items-center gap-2.5 transition">
+                  <span class="text-emerald-400 font-bold">➕</span> Agregar un nuevo integrante
+                </button>
+                <button onclick="openModalEditDevSelect()" class="w-full text-left px-4 py-2 text-xs text-slate-200 hover:bg-slate-800/80 flex items-center gap-2.5 transition">
+                  <span class="text-amber-400">✏️</span> Editar un integrante
+                </button>
+                <button onclick="openModalDeleteDevSelect()" class="w-full text-left px-4 py-2 text-xs text-rose-300 hover:bg-rose-950/40 flex items-center gap-2.5 transition">
+                  <span class="text-rose-400">🗑️</span> Eliminar un integrante
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Accesos rápidos convenientes -->
+          <button onclick="openModalCreateSprint()" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg font-medium text-xs sm:text-sm transition flex items-center gap-1.5">
+            <span>➕</span> Registrar Sprint
+          </button>
+          <button onclick="openModalAddDev()" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg font-medium text-xs sm:text-sm transition flex items-center gap-1.5">
+            <span>👤</span> Nuevo Integrante
+          </button>
+        </div>
+
+        <!-- Filtro Histórico y Exportación -->
+        <div class="flex items-center gap-3">
+          <div class="flex items-center gap-2 text-xs text-slate-400">
+            <label for="filter-up-to">Ver histórico hasta:</label>
+            <select id="filter-up-to" onchange="loadDashboard()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200 text-xs focus:ring-1 focus:ring-emerald-500">
+              <option value="">Todos los sprints</option>
+            </select>
+          </div>
+
+          <div class="h-6 w-px bg-slate-800"></div>
+
+          <button onclick="exportData('csv')" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs border border-slate-700 transition" title="Exportar reporte en CSV">
+            CSV
+          </button>
+          <button onclick="exportData('md')" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs border border-slate-700 transition" title="Exportar reporte en Markdown">
+            Markdown
+          </button>
+        </div>
+      </div>
+
+      <!-- Tabla: Control de Rendimiento y Reparto de Ingresos -->
+      <div class="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+        <div class="p-5 border-b border-slate-800 flex items-center justify-between">
+          <div>
+            <h2 class="text-base font-semibold text-white">Control de Rendimiento y Reparto de Ingresos</h2>
+            <p class="text-xs text-slate-400 mt-0.5">
+              Registro acumulado de tareas cerradas por ciclo y cálculo exacto de participación del equipo.
+            </p>
+          </div>
+        </div>
+
+        <div class="overflow-x-auto max-h-[600px] overflow-y-auto">
+          <table class="w-full text-left text-sm" id="table-matrix">
+            <thead class="bg-slate-950 text-slate-400 text-xs uppercase tracking-wider border-b border-slate-800 sticky top-0 z-10">
+              <tr id="matrix-headers">
+                <th class="py-3.5 px-4 font-semibold text-slate-300 bg-slate-950 min-w-[160px]">Integrante</th>
+                <!-- Columnas de Sprints Dinámicos -->
+                <th class="py-3.5 px-4 text-center font-semibold text-slate-300 bg-slate-950 w-36 whitespace-nowrap">Total Acumulado</th>
+                <th class="py-3.5 px-4 text-left font-semibold text-slate-300 min-w-[220px] bg-slate-950">Participación de Ingresos (%)</th>
+                <th class="py-3.5 px-4 text-center font-semibold text-slate-400 bg-slate-950 w-28 whitespace-nowrap">Eficacia</th>
+              </tr>
+            </thead>
+            <tbody id="matrix-body" class="divide-y divide-slate-800/60">
+              <tr>
+                <td colspan="4" class="py-12 text-center text-slate-500 text-xs">
+                  Cargando métricas del equipo...
+                </td>
+              </tr>
+            </tbody>
+            <tfoot id="matrix-foot" class="bg-slate-950 font-semibold border-t-2 border-slate-800 text-slate-200 sticky bottom-0 z-10">
+              <!-- Fila Total Equipo -->
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      <!-- Detalle de Sprints y Acordeón de Tareas -->
+      <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-sm space-y-4">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-4">
+          <div>
+            <h2 class="text-base font-semibold text-white">Desglose de Tareas por Sprint</h2>
+            <p class="text-xs text-slate-400">Detalle de tareas completadas, en progreso y colaboradores en cada una.</p>
+          </div>
+        </div>
+
+        <div id="sprints-details-list" class="space-y-4">
+          <!-- Acordeones dinámicos -->
+        </div>
+      </div>
+
+    </div>
+
+    <!-- =======================================================================
+         VISTA 3: RENDIMIENTO (Desempeño Individual de Todos los Integrantes)
+         ======================================================================= -->
+    <div id="view-rendimiento" class="hidden space-y-6">
+
+      <!-- Barra de Filtro y Búsqueda de Integrantes -->
+      <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-4">
+        <div class="flex-1 min-w-[240px] max-w-md relative">
+          <input type="text" id="input-search-dev" oninput="filterIndividualCards(this.value)" placeholder="Buscar integrante por nombre..." class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2 text-xs text-white placeholder-slate-500 focus:ring-1 focus:ring-emerald-500">
+        </div>
+
+        <div class="flex items-center gap-3 text-xs text-slate-400">
+          <label for="select-sort-devs">Ordenar por:</label>
+          <select id="select-sort-devs" onchange="sortIndividualCards(this.value)" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200 text-xs focus:ring-1 focus:ring-emerald-500">
+            <option value="percentage_desc">Mayor % de Ingresos</option>
+            <option value="tasks_desc">Más Tareas Realizadas</option>
+            <option value="efficiency_desc">Mayor Eficacia</option>
+            <option value="name_asc">Nombre (A - Z)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Grid Espacioso de Tarjetas para 20+ Integrantes -->
+      <div id="rendimiento-cards-container" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-5">
+        <!-- Tarjetas individuales generadas por JS -->
+      </div>
+
+    </div>
+
+    <!-- =======================================================================
+         VISTA 4: USUARIOS (Exclusivo Administrador)
+         ======================================================================= -->
+    <div id="view-usuarios" class="hidden space-y-6">
+      
+      <!-- Cabecera de la vista -->
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-slate-900/60 p-5 sm:p-6 rounded-2xl border border-slate-800 shadow-sm">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="text-xl">👥</span>
+            <h2 class="text-lg font-bold text-white">Gestión de Usuarios y Roles</h2>
+            <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">👑 Solo Administrador</span>
+          </div>
+          <p class="text-xs text-slate-400 mt-1">Crea accesos para tus líderes, define permisos y administra credenciales del sistema.</p>
+        </div>
+        <button onclick="openModalCreateUser()" class="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/50">
+          <span>➕</span>
+          <span>Crear Nuevo Usuario</span>
+        </button>
+      </div>
+
+      <!-- Tabla Responsive de Usuarios -->
+      <div class="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr class="border-b border-slate-800 bg-slate-950/80 text-slate-400 uppercase tracking-wider font-semibold">
+                <th class="py-3.5 px-4">Nombre / Integrante</th>
+                <th class="py-3.5 px-4">Correo Electrónico</th>
+                <th class="py-3.5 px-4">Rol Asignado</th>
+                <th class="py-3.5 px-4">Estado</th>
+                <th class="py-3.5 px-4 text-right">Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="users-table-body" class="divide-y divide-slate-800/60 text-slate-300">
+              <tr>
+                <td colspan="5" class="py-8 text-center text-slate-500">Cargando usuarios del sistema...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </main>
+  </div> <!-- Cierre de #app-main-layout -->
+
+  <!-- =========================================================================
+       MODALES DE OPERACIÓN
+       ========================================================================= -->
+
+  <!-- Modal: Historial y Especialización del Integrante (NUEVO) -->
+  <div id="modal-dev-history" class="fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-6 shadow-2xl space-y-5 max-h-[90vh] flex flex-col">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div class="flex items-center gap-3">
+          <div id="history-avatar" class="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center text-sm">
+            --
+          </div>
+          <div>
+            <h3 id="history-dev-name" class="text-base font-bold text-white leading-tight">--</h3>
+            <p class="text-xs text-slate-400">Historial de Sprints, Tareas y Especialización</p>
+          </div>
+        </div>
+        <button onclick="closeModal('modal-dev-history')" class="text-slate-400 hover:text-white text-xl">&times;</button>
+      </div>
+
+      <!-- Resumen de Métricas del Integrante -->
+      <div class="grid grid-cols-3 gap-3 p-3 bg-slate-950/70 rounded-xl border border-slate-800 text-center">
+        <div>
+          <span class="text-[11px] text-slate-400 block font-medium">Tareas Realizadas</span>
+          <span id="history-completed-tasks" class="text-base font-bold text-white font-mono mt-0.5 block">0</span>
+        </div>
+        <div>
+          <span class="text-[11px] text-slate-400 block font-medium">Participación Ingresos</span>
+          <span id="history-revenue-pct" class="text-base font-bold text-emerald-400 font-mono mt-0.5 block">0%</span>
+        </div>
+        <div>
+          <span class="text-[11px] text-slate-400 block font-medium">Eficacia en Tareas</span>
+          <span id="history-efficiency-pct" class="text-base font-bold text-emerald-400 font-mono mt-0.5 block">0%</span>
+        </div>
+      </div>
+
+      <!-- Timeline de Sprints y Tareas Trabajadas -->
+      <div class="space-y-3 overflow-y-auto flex-1 pr-1">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-semibold text-slate-300 uppercase tracking-wider block">Historial de Tareas y Colaboraciones</span>
+          <span class="text-[11px] text-slate-500 italic">Base para considerar futuras tareas</span>
+        </div>
+        <div id="history-sprints-container" class="space-y-3">
+          <!-- Rellenado dinámicamente -->
+        </div>
+      </div>
+
+      <div class="flex justify-end pt-3 border-t border-slate-800">
+        <button onclick="closeModal('modal-dev-history')" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm transition">
+          Cerrar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Crear / Editar Sprint -->
+  <div id="modal-sprint" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full p-6 shadow-2xl space-y-5 max-h-[90vh] flex flex-col">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 id="modal-sprint-title" class="text-base font-semibold text-white">Agregar Nuevo Sprint</h3>
+        <button onclick="closeModal('modal-sprint')" class="text-slate-400 hover:text-white text-xl">&times;</button>
+      </div>
+
+      <div class="space-y-4 overflow-y-auto flex-1 pr-1">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <label class="block text-xs font-medium text-slate-300 mb-1">Número de Sprint</label>
+            <input type="number" id="input-sprint-number" min="1" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="Ej. 1">
+          </div>
+          <div class="sm:col-span-2">
+            <label class="block text-xs font-medium text-slate-300 mb-1">Nombre del Sprint</label>
+            <input type="text" id="input-sprint-name" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="Ej. Sprint 1 - Core Engine">
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Estado</label>
+          <select id="input-sprint-status" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500">
+            <option value="completed">Completado</option>
+            <option value="in_progress">En progreso</option>
+          </select>
+        </div>
+
+        <!-- Lista Dinámica de Tareas y Asignaciones -->
+        <div class="border-t border-slate-800 pt-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold text-slate-300 uppercase tracking-wider">Tareas y Asignaciones</span>
+            <button type="button" onclick="addTaskRow()" class="px-3 py-1 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-medium transition flex items-center gap-1">
+              <span>+</span> Agregar Tarea
+            </button>
+          </div>
+          <p class="text-[11px] text-slate-400">Define las tareas del sprint. Puedes asignar uno o múltiples integrantes a una misma tarea si colaboraron en ella.</p>
+
+          <div id="tasks-container" class="space-y-3">
+            <!-- Tareas insertadas dinámicamente -->
+          </div>
+        </div>
+      </div>
+
+      <div class="flex justify-end gap-3 pt-3 border-t border-slate-800">
+        <button type="button" onclick="closeModal('modal-sprint')" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm transition">
+          Cancelar
+        </button>
+        <button type="button" onclick="saveSprintSubmit()" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium transition shadow-sm">
+          Guardar Sprint
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Editar Sprint (Selector) -->
+  <div id="modal-select-edit-sprint" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-base font-semibold text-white">Seleccionar Sprint a Editar</h3>
+        <button onclick="closeModal('modal-select-edit-sprint')" class="text-slate-400 hover:text-white">&times;</button>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-300 mb-1">Sprint</label>
+        <select id="select-edit-sprint-id" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500">
+        </select>
+      </div>
+      <div class="flex justify-end gap-3 pt-3 border-t border-slate-800">
+        <button onclick="closeModal('modal-select-edit-sprint')" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm transition">
+          Cancelar
+        </button>
+        <button onclick="proceedToEditSprint()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium transition">
+          Cargar Sprint
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Eliminar Sprint -->
+  <div id="modal-delete-sprint" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-base font-semibold text-rose-300">Eliminar Sprint</h3>
+        <button onclick="closeModal('modal-delete-sprint')" class="text-slate-400 hover:text-white">&times;</button>
+      </div>
+      <p class="text-xs text-slate-300">
+        Selecciona el sprint que deseas eliminar. La columna correspondiente se borrará y los porcentajes de ingresos se recalcularán sin afectar el resto de datos.
+      </p>
+      <div>
+        <label class="block text-xs font-medium text-slate-300 mb-1">Sprint a eliminar</label>
+        <select id="select-delete-sprint-id" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-rose-500">
+        </select>
+      </div>
+      <div class="flex justify-end gap-3 pt-3 border-t border-slate-800">
+        <button onclick="closeModal('modal-delete-sprint')" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm transition">
+          Cancelar
+        </button>
+        <button onclick="confirmDeleteSprint()" class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-sm font-medium transition">
+          Eliminar Sprint
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Agregar Integrante -->
+  <div id="modal-add-dev" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-base font-semibold text-white">Agregar Nuevo Integrante</h3>
+        <button onclick="closeModal('modal-add-dev')" class="text-slate-400 hover:text-white">&times;</button>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-300 mb-1">Nombre o Alias</label>
+        <input type="text" id="input-new-dev-name" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="Ej. Capo, Fabi, Dylan, Dreymor...">
+      </div>
+      <div class="flex justify-end gap-3 pt-3 border-t border-slate-800">
+        <button onclick="closeModal('modal-add-dev')" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm transition">
+          Cancelar
+        </button>
+        <button onclick="submitAddDev()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium transition">
+          Registrar Integrante
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Editar Integrante -->
+  <div id="modal-edit-dev" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-base font-semibold text-white">Editar Integrante</h3>
+        <button onclick="closeModal('modal-edit-dev')" class="text-slate-400 hover:text-white">&times;</button>
+      </div>
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Integrante Actual</label>
+          <select id="select-edit-dev-old" onchange="onDevSelectChange()" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500">
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Nuevo Nombre</label>
+          <input type="text" id="input-edit-dev-new-name" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500">
+        </div>
+      </div>
+      <div class="flex justify-end gap-3 pt-3 border-t border-slate-800">
+        <button onclick="closeModal('modal-edit-dev')" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm transition">
+          Cancelar
+        </button>
+        <button onclick="submitEditDev()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium transition">
+          Actualizar Integrante
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Eliminar Integrante -->
+  <div id="modal-delete-dev" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-base font-semibold text-rose-300">Eliminar Integrante</h3>
+        <button onclick="closeModal('modal-delete-dev')" class="text-slate-400 hover:text-white">&times;</button>
+      </div>
+      <p class="text-xs text-slate-300">
+        Selecciona el integrante que deseas eliminar. Sus asignaciones se retirarán y se recalculará la distribución de ingresos del equipo.
+      </p>
+      <div>
+        <label class="block text-xs font-medium text-slate-300 mb-1">Integrante a eliminar</label>
+        <select id="select-delete-dev-name" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-rose-500">
+        </select>
+      </div>
+      <div class="flex justify-end gap-3 pt-3 border-t border-slate-800">
+        <button onclick="closeModal('modal-delete-dev')" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm transition">
+          Cancelar
+        </button>
+        <button onclick="confirmDeleteDev()" class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-sm font-medium transition">
+          Eliminar Integrante
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Autenticación con Supabase -->
+  <div id="modal-auth" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div class="flex items-center gap-2">
+          <span class="text-emerald-400 text-lg">⚡</span>
+          <h3 class="text-base font-semibold text-white" id="modal-auth-title">Autenticación Supabase</h3>
+        </div>
+        <button onclick="closeModal('modal-auth')" class="text-slate-400 hover:text-white">&times;</button>
+      </div>
+
+      <!-- Tabs Login vs Registro -->
+      <div class="flex p-1 bg-slate-950 rounded-xl border border-slate-800">
+        <button id="tab-auth-login" type="button" onclick="switchAuthMode('login')" class="flex-1 py-1.5 text-xs font-semibold rounded-lg transition text-white bg-slate-800 shadow-sm">
+          Iniciar Sesión
+        </button>
+        <button id="tab-auth-register" type="button" onclick="switchAuthMode('register')" class="flex-1 py-1.5 text-xs font-semibold rounded-lg transition text-slate-400 hover:text-slate-200">
+          Crear Cuenta
+        </button>
+      </div>
+
+      <!-- Alerta de Error -->
+      <div id="auth-error-alert" class="hidden p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs">
+      </div>
+
+      <!-- Formulario Auth -->
+      <form id="form-auth" onsubmit="event.preventDefault(); submitAuth();" class="space-y-3">
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Correo Electrónico</label>
+          <input type="email" id="auth-input-email" required class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="tu-correo@empresa.com">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Contraseña</label>
+          <input type="password" id="auth-input-password" required minlength="6" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="••••••••">
+          <p class="text-[11px] text-slate-500 mt-1">Mínimo 6 caracteres.</p>
+        </div>
+        <div id="auth-field-confirm-password" class="hidden">
+          <label class="block text-xs font-medium text-slate-300 mb-1">Confirmar Contraseña</label>
+          <input type="password" id="auth-input-confirm-password" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="••••••••">
+        </div>
+
+        <div class="pt-2">
+          <button type="submit" id="btn-auth-submit" class="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-semibold transition shadow-sm flex items-center justify-center gap-2">
+            <span id="btn-auth-text">Iniciar Sesión</span>
+          </button>
+        </div>
+      </form>
+
+      <div class="text-center pt-2 border-t border-slate-800">
+        <p class="text-xs text-slate-400" id="auth-toggle-caption">
+          ¿No tienes una cuenta aún?
+          <button type="button" onclick="switchAuthMode('register')" class="text-emerald-400 hover:underline font-medium">Regístrate</button>
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Crear Nuevo Usuario (Admin) -->
+  <div id="modal-admin-create-user" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div class="flex items-center gap-2">
+          <span class="text-emerald-400 text-base">➕</span>
+          <h3 class="text-base font-semibold text-white">Crear Nuevo Usuario</h3>
+        </div>
+        <button onclick="closeModal('modal-admin-create-user')" class="text-slate-400 hover:text-white">&times;</button>
+      </div>
+
+      <div id="admin-create-user-error" class="hidden p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs"></div>
+
+      <form id="form-admin-create-user" onsubmit="event.preventDefault(); submitAdminCreateUser();" class="space-y-3">
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Nombre Completo o Alias</label>
+          <input type="text" id="admin-user-name" required class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="Ej. Capo, Fabi, Dylan...">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Correo Electrónico</label>
+          <input type="email" id="admin-user-email" required class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="usuario@equipo.com">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Contraseña Inicial</label>
+          <input type="password" id="admin-user-password" required minlength="6" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="••••••••">
+          <p class="text-[11px] text-slate-500 mt-0.5">Mínimo 6 caracteres.</p>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Rol en el Sistema</label>
+          <select id="admin-user-role" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500">
+            <option value="lider" selected>⭐ Líder (Califica tareas, gestiona sprints)</option>
+            <option value="admin">👑 Administrador (Acceso total y gestión de usuarios)</option>
+          </select>
+        </div>
+
+        <div class="flex justify-end gap-3 pt-3 border-t border-slate-800">
+          <button type="button" onclick="closeModal('modal-admin-create-user')" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm transition">
+            Cancelar
+          </button>
+          <button type="submit" id="btn-submit-create-user" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-semibold transition">
+            Crear Usuario
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Editar Usuario (Admin) -->
+  <div id="modal-admin-edit-user" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-base font-semibold text-white">Editar Usuario y Permisos</h3>
+        <button onclick="closeModal('modal-admin-edit-user')" class="text-slate-400 hover:text-white">&times;</button>
+      </div>
+
+      <div id="admin-edit-user-error" class="hidden p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs"></div>
+
+      <form id="form-admin-edit-user" onsubmit="event.preventDefault(); submitAdminEditUser();" class="space-y-3">
+        <input type="hidden" id="edit-user-id">
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Nombre Completo</label>
+          <input type="text" id="edit-user-name" required class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Correo Electrónico</label>
+          <input type="text" id="edit-user-email" disabled class="w-full bg-slate-950/60 border border-slate-800 rounded-lg px-3 py-2 text-slate-500 text-sm cursor-not-allowed">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Rol</label>
+          <select id="edit-user-role" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500">
+            <option value="lider">⭐ Líder (Califica tareas, gestiona sprints)</option>
+            <option value="admin">👑 Administrador (Acceso total y gestión de usuarios)</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Estado de la Cuenta</label>
+          <select id="edit-user-active" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500">
+            <option value="true">Activo (Puede iniciar sesión)</option>
+            <option value="false">Desactivado (Acceso bloqueado)</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">Cambiar Contraseña (Opcional)</label>
+          <input type="password" id="edit-user-password" minlength="6" placeholder="Dejar en blanco para conservar actual" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500">
+        </div>
+
+        <div class="flex justify-end gap-3 pt-3 border-t border-slate-800">
+          <button type="button" onclick="closeModal('modal-admin-edit-user')" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm transition">
+            Cancelar
+          </button>
+          <button type="submit" id="btn-submit-edit-user" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-semibold transition">
+            Guardar Cambios
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Notificaciones Toast -->
+  <div id="toast-container" class="fixed bottom-5 right-5 z-50 space-y-2"></div>
+
+  <!-- Script de la Aplicación -->
+  <script src="/static/js/app.js?v=2.0"></script>
+</body>
+</html>
