@@ -1,420 +1,313 @@
 """
-Supabase Authentication Service con Soporte RBAC (Roles: Admin y Líder)
-Manejo de registro, inicio de sesión, sesiones activas, perfiles y gestión administrativa de usuarios.
+Autenticación y gestión de usuarios (roles: admin y líder de área).
+
+- Con Supabase configurado, las cuentas viven en Supabase Auth y los perfiles en la
+  tabla `user_profiles`. No hay respaldo local: si Supabase falla, el error se muestra.
+- Sin Supabase (modo local de desarrollo) todo se guarda en SQLite.
 """
 
-import os
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
+
 from src.core.config import Config
 from src.database.sqlite import SQLiteMetricsRepository
 
+ROLES = ("admin", "lider")
+MIN_PASSWORD_LENGTH = 6
+
 
 class SupabaseAuthService:
-    """
-    Servicio de autenticación integrado con Supabase Auth y perfiles de usuario.
-    Permite acceso como Administrador (gestión total de usuarios) o Líder (gestión de sprints y tareas).
-    """
-
-    def __init__(self, url: Optional[str] = None, key: Optional[str] = None):
-        self.url = url or Config.SUPABASE_URL
-        self.key = key or Config.SUPABASE_KEY
+    def __init__(self):
         self.is_configured = Config.is_supabase_configured()
-        self._client = None
-        self._admin_client = None
-        self._sqlite = SQLiteMetricsRepository()
+        self.db: Any = None
+        self._local: Optional[SQLiteMetricsRepository] = None
 
         if self.is_configured:
-            try:
-                from supabase import create_client
-                self._client = create_client(self.url, self.key)
-                if Config.SUPABASE_SERVICE_ROLE_KEY:
-                    self._admin_client = create_client(self.url, Config.SUPABASE_SERVICE_ROLE_KEY)
-            except Exception:
-                self._client = None
-                self._admin_client = None
-                self.is_configured = False
+            from supabase import create_client
 
-    def sign_up(self, email: str, password: str) -> Dict[str, Any]:
-        """Registro público o estándar de usuario (asignado por defecto con rol 'lider')."""
-        return self.create_user_by_admin(
-            email=email,
-            password=password,
-            name=email.split("@")[0].capitalize(),
-            role="lider"
-        )
+            # Cliente service_role: tablas y administración de cuentas. Nunca inicia
+            # sesión con él, para que no adopte el token de un usuario.
+            self.db = create_client(Config.SUPABASE_URL, Config.SUPABASE_SERVICE_ROLE_KEY)
 
+    @property
+    def local(self) -> SQLiteMetricsRepository:
+        if self._local is None:
+            self._local = SQLiteMetricsRepository()
+        return self._local
 
-    def _get_or_create_profile(self, user_id: str, email: str, name: Optional[str] = None, role: Optional[str] = None) -> Dict[str, Any]:
-        """Obtiene o inicializa el perfil de usuario con su rol correspondiente."""
-        clean_email = email.strip().lower()
-        clean_name = name or clean_email.split("@")[0].capitalize()
+    @staticmethod
+    def _anon_client():
+        """Cliente desechable para iniciar o refrescar sesión sin compartir estado."""
+        from supabase import create_client
 
-        if self._client and self.is_configured:
-            try:
-                res = self._client.table("user_profiles").select("*").eq("id", user_id).execute()
-                if res.data and len(res.data) > 0:
-                    return res.data[0]
+        return create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
 
-                # Si es el primer usuario del sistema o correo admin, se le da rol 'admin'
-                all_res = self._client.table("user_profiles").select("id").execute()
-                assigned_role = role or ("admin" if (not all_res.data or "admin" in clean_email) else "lider")
+    # -------------------------------------------------------------------------
+    # Perfiles
+    # -------------------------------------------------------------------------
+    def _get_profile(self, user_id: str) -> Optional[dict]:
+        if self.is_configured:
+            res = self.db.table("user_profiles").select("*").eq("id", user_id).limit(1).execute()
+            return res.data[0] if res.data else None
+        return self.local.get_user_profile(user_id)
 
-                insert_res = self._client.table("user_profiles").insert({
-                    "id": user_id,
-                    "email": clean_email,
-                    "name": clean_name,
-                    "role": assigned_role,
-                    "active": True
-                }).execute()
+    @staticmethod
+    def _public_user(profile: dict) -> Dict[str, Any]:
+        return {
+            "id": str(profile["id"]),
+            "email": profile["email"],
+            "name": profile["name"],
+            "role": profile["role"],
+            "area": profile.get("area"),
+            "active": bool(profile.get("active", True)),
+        }
 
-                if insert_res.data and len(insert_res.data) > 0:
-                    return insert_res.data[0]
-            except Exception:
-                pass
+    def _require_usable_profile(self, user_id: str) -> dict:
+        profile = self._get_profile(user_id)
+        if not profile:
+            raise ValueError("Tu cuenta no tiene un perfil asignado. Pide al administrador que te registre.")
+        if not profile.get("active", True):
+            raise ValueError("Tu cuenta ha sido desactivada por el administrador.")
+        return profile
 
-        # Fallback en SQLite
-        existing = self._sqlite.get_user_profile(user_id) or self._sqlite.get_user_profile(clean_email)
-        if existing:
-            return existing
+    @staticmethod
+    def _normalize_role_and_area(role: str, area: Optional[str]) -> tuple:
+        if role not in ROLES:
+            raise ValueError("El rol debe ser 'admin' o 'lider'.")
+        if role == "admin":
+            return role, None
+        clean_area = (area or "").strip().lower()
+        if clean_area not in Config.AREAS:
+            raise ValueError(f"Un líder necesita un área válida: {', '.join(Config.AREAS)}.")
+        return role, clean_area
 
-        all_profiles = self._sqlite.list_user_profiles()
-        assigned_role = role or ("admin" if (not all_profiles or "admin" in clean_email) else "lider")
-        return self._sqlite.upsert_user_profile(
-            user_id=user_id,
-            email=clean_email,
-            name=clean_name,
-            role=assigned_role,
-            active=True
-        )
-
+    # -------------------------------------------------------------------------
+    # Sesión
+    # -------------------------------------------------------------------------
     def sign_in(self, email: str, password: str) -> Dict[str, Any]:
-        """Inicia sesión con email y contraseña, retornando el token y el perfil con rol."""
         email = email.strip().lower()
 
-        if self._client and self.is_configured:
+        if self.is_configured:
+            from supabase_auth.errors import AuthApiError
+
             try:
-                res = self._client.auth.sign_in_with_password({"email": email, "password": password})
-                if not res.session or not res.user:
-                    raise ValueError("Credenciales inválidas o cuenta no verificada.")
-
-                profile = self._get_or_create_profile(
-                    user_id=str(res.user.id),
-                    email=res.user.email,
-                    name=res.user.user_metadata.get("name") if res.user.user_metadata else None
-                )
-
-                if not profile.get("active", True):
-                    raise ValueError("Tu cuenta ha sido desactivada por el administrador.")
-
-                return {
-                    "status": "success",
-                    "access_token": res.session.access_token,
-                    "refresh_token": res.session.refresh_token,
-                    "token_type": "bearer",
-                    "expires_in": getattr(res.session, "expires_in", 3600),
-                    "user": {
-                        "id": str(res.user.id),
-                        "email": res.user.email,
-                        "name": profile.get("name", email.split("@")[0].capitalize()),
-                        "role": profile.get("role", "lider"),
-                        "active": profile.get("active", True),
-                    }
-                }
-            except Exception as e:
-                msg = str(e)
-                if "invalid login credentials" in msg.lower() or "invalid_grant" in msg.lower():
+                res = self._anon_client().auth.sign_in_with_password({"email": email, "password": password})
+            except AuthApiError as e:
+                if "invalid login credentials" in str(e).lower():
                     raise ValueError("Correo o contraseña incorrectos.")
-                raise ValueError(msg)
-        else:
-            # Modo Dev Offline persistido en SQLite
-            profile = self._sqlite.get_user_profile(email)
-            if not profile:
-                # Comprobar si es admin por defecto
-                if email == "admin@taskmetrics.com" and password == "admin123":
-                    profile = self._sqlite.upsert_user_profile(
-                        user_id=str(uuid4()),
-                        email=email,
-                        name="Administrador Principal",
-                        role="admin",
-                        password=password,
-                        active=True
-                    )
-                elif email == "dev@taskmetrics.com" and password == "password123":
-                    profile = self._sqlite.upsert_user_profile(
-                        user_id=str(uuid4()),
-                        email=email,
-                        name="Líder Desarrollador",
-                        role="lider",
-                        password=password,
-                        active=True
-                    )
-                else:
-                    raise ValueError("Credenciales incorrectas.")
+                raise ValueError(f"Supabase rechazó el inicio de sesión: {e}")
+            if not res.session or not res.user:
+                raise ValueError("Credenciales inválidas o cuenta no verificada.")
 
-            if not profile.get("active", True):
-                raise ValueError("Tu cuenta ha sido desactivada por el administrador.")
+            profile = self._require_usable_profile(str(res.user.id))
+            return self._session_payload(
+                profile, res.session.access_token, res.session.refresh_token,
+                getattr(res.session, "expires_in", 3600)
+            )
 
-            mock_token = f"dev-token-{email}"
-            return {
-                "status": "success",
-                "access_token": mock_token,
-                "refresh_token": f"dev-refresh-{email}",
-                "token_type": "bearer",
-                "expires_in": 86400,
-                "user": {
-                    "id": str(profile["id"]),
-                    "email": profile["email"],
-                    "name": profile["name"],
-                    "role": profile["role"],
-                    "active": bool(profile["active"]),
-                }
-            }
+        profile = self.local.verify_credentials(email, password)
+        if not profile:
+            raise ValueError("Correo o contraseña incorrectos.")
+        if not profile["active"]:
+            raise ValueError("Tu cuenta ha sido desactivada por el administrador.")
+        return self._session_payload(
+            profile,
+            self.local.create_session(profile["id"], "access"),
+            self.local.create_session(profile["id"], "refresh"),
+            None
+        )
+
+    def _session_payload(self, profile: dict, access: str, refresh: Optional[str], expires_in: Optional[int]) -> Dict[str, Any]:
+        return {
+            "status": "success",
+            "access_token": access,
+            "refresh_token": refresh,
+            "token_type": "bearer",
+            "expires_in": expires_in,
+            "user": self._public_user(profile),
+        }
 
     def get_user(self, access_token: str) -> Optional[Dict[str, Any]]:
-        """Valida el JWT y retorna la identidad del usuario junto con su rol ('admin' o 'lider')."""
+        """Valida el token y devuelve el usuario con su rol y área; None si no es válido."""
         if not access_token:
             return None
+        token = access_token.replace("Bearer ", "").strip()
 
-        clean_token = access_token.replace("Bearer ", "").strip()
+        if self.is_configured:
+            from supabase_auth.errors import AuthApiError
 
-        if self._client and self.is_configured:
             try:
-                res = self._client.auth.get_user(clean_token)
-                if res and res.user:
-                    profile = self._get_or_create_profile(
-                        user_id=str(res.user.id),
-                        email=res.user.email
-                    )
-                    return {
-                        "id": str(res.user.id),
-                        "email": res.user.email,
-                        "name": profile.get("name", res.user.email.split("@")[0].capitalize()),
-                        "role": profile.get("role", "lider"),
-                        "active": profile.get("active", True),
-                        "token": clean_token,
-                    }
+                res = self.db.auth.get_user(token)
+            except AuthApiError:
                 return None
-            except Exception:
+            if not res or not res.user:
                 return None
+            profile = self._get_profile(str(res.user.id))
         else:
-            if clean_token.startswith("dev-token-"):
-                email = clean_token.replace("dev-token-", "")
-                profile = self._sqlite.get_user_profile(email)
-                if profile:
-                    return {
-                        "id": str(profile["id"]),
-                        "email": profile["email"],
-                        "name": profile["name"],
-                        "role": profile["role"],
-                        "active": bool(profile["active"]),
-                        "token": clean_token,
-                    }
-                return {
-                    "id": f"dev-{hash(email) & 0xffffffff}",
-                    "email": email,
-                    "name": email.split("@")[0].capitalize(),
-                    "role": "admin" if "admin" in email else "lider",
-                    "active": True,
-                    "token": clean_token,
-                }
+            profile = self.local.get_session_profile(token, "access")
+
+        if not profile or not profile.get("active", True):
             return None
+        return {**self._public_user(profile), "token": token}
 
     def refresh_session(self, refresh_token: str) -> Dict[str, Any]:
-        """Refresca la sesión."""
-        if self._client and self.is_configured:
-            try:
-                res = self._client.auth.refresh_session(refresh_token)
-                if not res.session or not res.user:
-                    raise ValueError("No se pudo refrescar la sesión.")
+        if self.is_configured:
+            from supabase_auth.errors import AuthApiError
 
-                profile = self._get_or_create_profile(str(res.user.id), res.user.email)
-                return {
-                    "status": "success",
-                    "access_token": res.session.access_token,
-                    "refresh_token": res.session.refresh_token,
-                    "token_type": "bearer",
-                    "expires_in": getattr(res.session, "expires_in", 3600),
-                    "user": {
-                        "id": str(res.user.id),
-                        "email": res.user.email,
-                        "name": profile.get("name"),
-                        "role": profile.get("role", "lider"),
-                        "active": profile.get("active", True),
-                    }
-                }
-            except Exception as e:
+            try:
+                res = self._anon_client().auth.refresh_session(refresh_token)
+            except AuthApiError as e:
                 raise ValueError(f"Token de actualización inválido: {e}")
-        else:
-            if refresh_token.startswith("dev-refresh-"):
-                email = refresh_token.replace("dev-refresh-", "")
-                profile = self._sqlite.get_user_profile(email) or {"name": email.split("@")[0].capitalize(), "role": "admin" if "admin" in email else "lider"}
-                return {
-                    "status": "success",
-                    "access_token": f"dev-token-{email}",
-                    "refresh_token": refresh_token,
-                    "token_type": "bearer",
-                    "expires_in": 86400,
-                    "user": {
-                        "id": f"dev-{hash(email) & 0xffffffff}",
-                        "email": email,
-                        "name": profile.get("name"),
-                        "role": profile.get("role", "lider"),
-                        "active": True,
-                    }
-                }
-            raise ValueError("Refresh token inválido.")
+            if not res.session or not res.user:
+                raise ValueError("No se pudo refrescar la sesión.")
+            profile = self._require_usable_profile(str(res.user.id))
+            return self._session_payload(
+                profile, res.session.access_token, res.session.refresh_token,
+                getattr(res.session, "expires_in", 3600)
+            )
+
+        profile = self.local.get_session_profile(refresh_token, "refresh")
+        if not profile or not profile["active"]:
+            raise ValueError("Token de actualización inválido.")
+        return self._session_payload(
+            profile, self.local.create_session(profile["id"], "access"), refresh_token, None
+        )
 
     def sign_out(self, access_token: Optional[str] = None) -> None:
-        """Cierra la sesión."""
-        if self._client and self.is_configured:
+        if not access_token:
+            return
+        if self.is_configured:
+            from supabase_auth.errors import AuthApiError
+
             try:
-                self._client.auth.sign_out()
-            except Exception:
+                self.db.auth.admin.sign_out(access_token)
+            except AuthApiError:
                 pass
+        else:
+            self.local.delete_session(access_token)
 
     # -------------------------------------------------------------------------
-    # Métodos Administrativos (Exclusivos para rol 'admin')
+    # Administración de usuarios (solo rol 'admin')
     # -------------------------------------------------------------------------
     def list_users(self) -> List[Dict[str, Any]]:
-        """Lista todos los perfiles de usuario del sistema."""
-        if self._client and self.is_configured:
-            try:
-                res = self._client.table("user_profiles").select("*").order("name").execute()
-                if res.data:
-                    return res.data
-            except Exception:
-                pass
-        return self._sqlite.list_user_profiles()
+        if self.is_configured:
+            res = self.db.table("user_profiles").select("*").order("name").execute()
+            profiles = res.data or []
+        else:
+            profiles = self.local.list_user_profiles()
+        return [{**self._public_user(p), "created_at": p.get("created_at")} for p in profiles]
 
-    def create_user_by_admin(self, email: str, password: str, name: str, role: str = "lider") -> Dict[str, Any]:
-        """Crea un nuevo usuario con rol específico ('admin' o 'lider') y lo habilita en el equipo."""
+    def create_user(self, email: str, password: str, name: str, role: str = "lider", area: Optional[str] = None) -> Dict[str, Any]:
         email = email.strip().lower()
         name = name.strip()
-        role = "admin" if role == "admin" else "lider"
+        if not email or "@" not in email:
+            raise ValueError("Correo electrónico inválido.")
+        if not name:
+            raise ValueError("El nombre es obligatorio.")
+        if len(password) < MIN_PASSWORD_LENGTH:
+            raise ValueError(f"La contraseña debe tener mínimo {MIN_PASSWORD_LENGTH} caracteres.")
+        role, area = self._normalize_role_and_area(role, area)
 
-        if len(password) < 6:
-            raise ValueError("La contraseña debe tener mínimo 6 caracteres.")
+        if self.is_configured:
+            from supabase_auth.errors import AuthApiError
 
-        new_user_id = str(uuid4())
-
-        if self._admin_client:
             try:
-                # 1. Crear en Supabase Auth con email confirmado
-                auth_res = self._admin_client.auth.admin.create_user({
+                created = self.db.auth.admin.create_user({
                     "email": email,
                     "password": password,
                     "email_confirm": True,
-                    "user_metadata": {"name": name, "role": role}
+                    "user_metadata": {"name": name},
                 })
-                if auth_res.user:
-                    new_user_id = str(auth_res.user.id)
+            except AuthApiError as e:
+                if "already" in str(e).lower():
+                    raise ValueError(f"Ya existe un usuario con el correo {email}.")
+                raise ValueError(f"Supabase no pudo crear la cuenta: {e}")
 
-                # 2. Registrar en user_profiles si existe la tabla
-                try:
-                    self._admin_client.table("user_profiles").upsert({
-                        "id": new_user_id,
-                        "email": email,
-                        "name": name,
-                        "role": role,
-                        "active": True
-                    }).execute()
-                except Exception:
-                    pass
-            except Exception as e:
-                msg = str(e)
-                if "already registered" not in msg.lower() and "already exists" not in msg.lower():
-                    pass
-        elif self._client and self.is_configured:
+            user_id = str(created.user.id)
             try:
-                # 1. Crear en Supabase Auth
-                auth_res = self._client.auth.sign_up({
+                res = self.db.table("user_profiles").upsert({
+                    "id": user_id,
                     "email": email,
-                    "password": password,
-                    "options": {"data": {"name": name, "role": role}}
-                })
-                if auth_res.user:
-                    new_user_id = str(auth_res.user.id)
-
-                # 2. Registrar o actualizar en user_profiles
-                try:
-                    self._client.table("user_profiles").upsert({
-                        "id": new_user_id,
-                        "email": email,
-                        "name": name,
-                        "role": role,
-                        "active": True
-                    }).execute()
-                except Exception:
-                    pass
-            except Exception as e:
-                pass
-
-        # Guardar también en SQLite para coherencia local
-        profile = self._sqlite.upsert_user_profile(
-            user_id=new_user_id,
-            email=email,
-            name=name,
-            role=role,
-            password=password,
-            active=True
-        )
+                    "name": name,
+                    "role": role,
+                    "area": area,
+                    "active": True,
+                }).execute()
+            except Exception:
+                # Sin perfil la cuenta no puede entrar: no se deja a medias
+                self.db.auth.admin.delete_user(user_id)
+                raise
+            profile = res.data[0]
+        else:
+            profile = self.local.create_user_profile(email, name, role, area, password)
 
         return {
             "status": "success",
             "message": f"Usuario '{name}' ({role}) creado exitosamente.",
-            "user": profile
+            "user": self._public_user(profile),
         }
 
-    def update_user_by_admin(
+    def update_user(
         self,
         user_id: str,
+        acting_user_id: str,
         name: Optional[str] = None,
         role: Optional[str] = None,
+        area: Optional[str] = None,
         active: Optional[bool] = None,
-        password: Optional[str] = None
+        password: Optional[str] = None,
     ) -> bool:
-        """Actualiza el nombre, rol o estado activo de un usuario."""
-        if role is not None and role not in ["admin", "lider"]:
-            raise ValueError("El rol debe ser 'admin' o 'lider'.")
+        profile = self._get_profile(user_id)
+        if not profile:
+            return False
 
-        updated = False
+        changes: Dict[str, Any] = {}
+        if name is not None:
+            if not name.strip():
+                raise ValueError("El nombre es obligatorio.")
+            changes["name"] = name.strip()
+        if role is not None or area is not None:
+            new_role, new_area = self._normalize_role_and_area(
+                role or profile["role"],
+                area if area is not None else profile.get("area"),
+            )
+            changes["role"], changes["area"] = new_role, new_area
+        if active is not None:
+            changes["active"] = active
+        if password:
+            if len(password) < MIN_PASSWORD_LENGTH:
+                raise ValueError(f"La contraseña debe tener mínimo {MIN_PASSWORD_LENGTH} caracteres.")
 
-        if self._client and self.is_configured:
+        if user_id == acting_user_id and (changes.get("role", "admin") != "admin" or changes.get("active") is False):
+            raise ValueError("No puedes quitarte el rol de administrador ni desactivar tu propia cuenta.")
+
+        if self.is_configured:
+            if changes:
+                self.db.table("user_profiles").update(changes).eq("id", user_id).execute()
+            if password:
+                from supabase_auth.errors import AuthApiError
+
+                try:
+                    self.db.auth.admin.update_user_by_id(user_id, {"password": password})
+                except AuthApiError as e:
+                    raise ValueError(f"Supabase no pudo cambiar la contraseña: {e}")
+            return True
+
+        if password:
+            changes["password"] = password
+        return self.local.update_user_profile(user_id, changes)
+
+    def delete_user(self, user_id: str) -> bool:
+        if not self._get_profile(user_id):
+            return False
+        if self.is_configured:
+            from supabase_auth.errors import AuthApiError
+
             try:
-                update_data = {}
-                if name is not None:
-                    update_data["name"] = name.strip()
-                if role is not None:
-                    update_data["role"] = role
-                if active is not None:
-                    update_data["active"] = active
-
-                if update_data:
-                    self._client.table("user_profiles").update(update_data).eq("id", user_id).execute()
-                    updated = True
-            except Exception:
-                pass
-
-        sqlite_ok = self._sqlite.update_user_profile(
-            user_id=user_id,
-            name=name,
-            role=role,
-            active=active,
-            password=password
-        )
-
-        return updated or sqlite_ok
-
-    def delete_user_by_admin(self, user_id: str) -> bool:
-        """Elimina o desactiva a un usuario del sistema."""
-        deleted = False
-        if self._client and self.is_configured:
-            try:
-                self._client.table("user_profiles").delete().eq("id", user_id).execute()
-                deleted = True
-            except Exception:
-                pass
-
-        sqlite_ok = self._sqlite.delete_user_profile(user_id)
-        return deleted or sqlite_ok
+                # El perfil se elimina en cascada (user_profiles.id -> auth.users.id)
+                self.db.auth.admin.delete_user(user_id)
+            except AuthApiError as e:
+                if "not found" not in str(e).lower():
+                    raise ValueError(f"Supabase no pudo eliminar la cuenta: {e}")
+            self.db.table("user_profiles").delete().eq("id", user_id).execute()
+            return True
+        return self.local.delete_user_profile(user_id)

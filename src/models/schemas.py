@@ -93,7 +93,7 @@ class SprintUpdateRequest(BaseModel):
 
 class UserCredentials(BaseModel):
     email: str = Field(..., description="Correo electrónico del usuario")
-    password: str = Field(..., min_length=6, description="Contraseña (mínimo 6 caracteres)")
+    password: str = Field(..., min_length=1, description="Contraseña")
 
 
 class TokenRefreshRequest(BaseModel):
@@ -114,11 +114,13 @@ class UserCreateAdmin(BaseModel):
     password: str = Field(..., min_length=6, description="Contraseña temporal inicial")
     name: str = Field(..., min_length=1, description="Nombre o alias del integrante")
     role: str = Field(default="lider", description="Rol del usuario ('admin' o 'lider')")
+    area: Optional[str] = Field(default=None, description="Área que dirige el líder (vacío para admin)")
 
 
 class UserUpdateAdmin(BaseModel):
     name: Optional[str] = None
     role: Optional[str] = None
+    area: Optional[str] = None
     active: Optional[bool] = None
     password: Optional[str] = None
 

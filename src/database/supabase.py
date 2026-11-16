@@ -1,66 +1,97 @@
-import os
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
 from src.models.schemas import Programmer, SprintDetail, TaskItem
 from .base import BaseMetricsRepository
+
+PAGE_SIZE = 1000
 
 
 class SupabaseMetricsRepository(BaseMetricsRepository):
     """
-    Repositorio persistente en la nube conectado con PostgreSQL en Supabase.
-    Mapea a las tablas relacionales: programmers, sprints, tasks y task_assignments.
+    Repositorio en la nube sobre PostgreSQL de Supabase (tablas programmers, sprints,
+    tasks y task_assignments). Cada instancia opera sobre una sola área.
+
+    Recibe un cliente creado con la llave service_role: el aislamiento entre áreas
+    lo aplica este backend, y RLS deja sin acceso a las llaves públicas.
     """
 
-    def __init__(self, url: Optional[str] = None, key: Optional[str] = None, auth_token: Optional[str] = None):
-        from supabase import create_client, Client
-        self.url = url or os.getenv("SUPABASE_URL")
-        self.key = key or os.getenv("SUPABASE_KEY")
-        if not self.url or not self.key or "your-project-ref" in self.url:
-            raise ValueError(
-                "Credenciales de Supabase no configuradas. "
-                "Define SUPABASE_URL y SUPABASE_KEY en .env"
-            )
-        self.client: Client = create_client(self.url, self.key)
-        if auth_token:
-            self.set_auth_token(auth_token)
+    def __init__(self, client: Any, area: str):
+        if not area:
+            raise ValueError("El repositorio de Supabase requiere un área.")
+        self.client = client
+        self.area = area.strip().lower()
 
-    def set_auth_token(self, token: Optional[str]) -> None:
-        """Asigna el JWT del usuario autenticado para que PostgREST aplique las políticas RLS."""
-        if token and hasattr(self, "client"):
-            self.client.postgrest.auth(token)
+    def _fetch_all(self, build_query) -> List[dict]:
+        """Recorre todas las páginas: PostgREST devuelve como máximo 1000 filas por petición."""
+        rows: List[dict] = []
+        start = 0
+        while True:
+            page = build_query().range(start, start + PAGE_SIZE - 1).execute().data or []
+            rows.extend(page)
+            if len(page) < PAGE_SIZE:
+                return rows
+            start += PAGE_SIZE
 
+    def _find_programmer(self, name: str) -> Optional[dict]:
+        """Busca por nombre dentro del área sin distinguir mayúsculas."""
+        wanted = name.strip().casefold()
+        rows = self._fetch_all(
+            lambda: self.client.table("programmers").select("*").eq("area", self.area).order("name")
+        )
+        return next((r for r in rows if r["name"].casefold() == wanted), None)
 
-    def add_programmer(self, name: str) -> Programmer:
-        clean_name = name.strip()
-        response = self.client.table("programmers").select("*").eq("name", clean_name).execute()
-        if response.data and len(response.data) > 0:
-            row = response.data[0]
-            return Programmer(name=row["name"], id=str(row["id"]), active=row.get("active", True))
+    def _find_sprint(self, sprint_number: int) -> Optional[dict]:
+        res = (
+            self.client.table("sprints").select("*")
+            .eq("area", self.area).eq("sprint_number", sprint_number)
+            .limit(1).execute()
+        )
+        return res.data[0] if res.data else None
 
-        insert_res = self.client.table("programmers").insert({"name": clean_name, "active": True}).execute()
-        row = insert_res.data[0]
+    @staticmethod
+    def _to_programmer(row: dict) -> Programmer:
         return Programmer(name=row["name"], id=str(row["id"]), active=row.get("active", True))
 
+    # -------------------------------------------------------------------------
+    # Integrantes
+    # -------------------------------------------------------------------------
+    def add_programmer(self, name: str) -> Programmer:
+        existing = self._find_programmer(name)
+        if existing:
+            return self._to_programmer(existing)
+        res = self.client.table("programmers").insert(
+            {"area": self.area, "name": name.strip(), "active": True}
+        ).execute()
+        return self._to_programmer(res.data[0])
+
     def update_programmer(self, old_name: str, new_name: str, active: bool = True) -> bool:
-        res = self.client.table("programmers").update({
-            "name": new_name.strip(),
-            "active": active
-        }).eq("name", old_name.strip()).execute()
-        return bool(res.data and len(res.data) > 0)
+        existing = self._find_programmer(old_name)
+        if not existing:
+            return False
+        self.client.table("programmers").update(
+            {"name": new_name.strip(), "active": active}
+        ).eq("id", existing["id"]).execute()
+        return True
 
     def remove_programmer(self, name: str) -> bool:
-        res = self.client.table("programmers").delete().eq("name", name.strip()).execute()
-        return bool(res.data and len(res.data) > 0)
+        existing = self._find_programmer(name)
+        if not existing:
+            return False
+        self.client.table("programmers").delete().eq("id", existing["id"]).execute()
+        return True
 
     def get_programmers(self, active_only: bool = True) -> List[Programmer]:
-        query = self.client.table("programmers").select("*")
-        if active_only:
-            query = query.eq("active", True)
-        res = query.order("name").execute()
-        return [
-            Programmer(name=row["name"], id=str(row["id"]), active=row.get("active", True))
-            for row in res.data
-        ]
+        def query():
+            q = self.client.table("programmers").select("*").eq("area", self.area)
+            if active_only:
+                q = q.eq("active", True)
+            return q.order("name")
 
+        return [self._to_programmer(row) for row in self._fetch_all(query)]
+
+    # -------------------------------------------------------------------------
+    # Sprints y tareas
+    # -------------------------------------------------------------------------
     def save_sprint_with_tasks(
         self,
         sprint_number: int,
@@ -68,22 +99,21 @@ class SupabaseMetricsRepository(BaseMetricsRepository):
         status: str,
         tasks: List[TaskItem]
     ) -> SprintDetail:
-        # 1. Obtener o insertar sprint
-        s_res = self.client.table("sprints").select("*").eq("sprint_number", sprint_number).execute()
-        if s_res.data and len(s_res.data) > 0:
-            sprint_id = s_res.data[0]["id"]
+        sprint = self._find_sprint(sprint_number)
+        if sprint:
+            sprint_id = sprint["id"]
             self.client.table("sprints").update({"name": name, "status": status}).eq("id", sprint_id).execute()
-            # Eliminar tareas anteriores en cascada
+            # Las asignaciones se eliminan en cascada junto con las tareas
             self.client.table("tasks").delete().eq("sprint_id", sprint_id).execute()
         else:
             ins = self.client.table("sprints").insert({
+                "area": self.area,
                 "sprint_number": sprint_number,
                 "name": name,
                 "status": status
             }).execute()
             sprint_id = ins.data[0]["id"]
 
-        # 2. Insertar tareas y asignaciones
         created_tasks: List[TaskItem] = []
         for t in tasks:
             t_status = t.status if t.status in ["completed", "in_progress"] else "completed"
@@ -94,22 +124,22 @@ class SupabaseMetricsRepository(BaseMetricsRepository):
             }).execute()
             task_id = t_ins.data[0]["id"]
 
-            assigned_names = []
+            assigned: Dict[str, str] = {}
             for dev_name in t.assigned_programmers:
                 prog = self.add_programmer(dev_name)
-                self.client.table("task_assignments").insert({
-                    "task_id": task_id,
-                    "programmer_id": prog.id,
-                    "completed": (t_status == "completed")
-                }).execute()
-                assigned_names.append(prog.name)
+                assigned[prog.id] = prog.name
+            if assigned:
+                self.client.table("task_assignments").insert([
+                    {"task_id": task_id, "programmer_id": p_id, "completed": t_status == "completed"}
+                    for p_id in assigned
+                ]).execute()
 
             created_tasks.append(TaskItem(
                 id=task_id,
                 sprint_id=sprint_id,
                 title=t.title,
                 status=t_status,
-                assigned_programmers=assigned_names
+                assigned_programmers=list(assigned.values())
             ))
 
         return SprintDetail(
@@ -121,52 +151,82 @@ class SupabaseMetricsRepository(BaseMetricsRepository):
         )
 
     def get_sprints(self) -> List[dict]:
-        res = self.client.table("sprints").select("id, sprint_number, name, status, tasks(id)").order("sprint_number").execute()
-        result = []
-        for r in res.data:
-            result.append({
+        rows = self._fetch_all(
+            lambda: self.client.table("sprints")
+            .select("id, sprint_number, name, status, tasks(id)")
+            .eq("area", self.area).order("sprint_number")
+        )
+        return [
+            {
                 "id": r["id"],
                 "sprint_number": r["sprint_number"],
                 "name": r["name"],
                 "status": r["status"],
-                "task_count": len(r.get("tasks", []))
-            })
-        return result
+                "task_count": len(r.get("tasks") or [])
+            }
+            for r in rows
+        ]
 
     def get_sprint_detail(self, sprint_number: int) -> Optional[SprintDetail]:
-        s_res = self.client.table("sprints").select("*").eq("sprint_number", sprint_number).execute()
-        if not s_res.data:
+        sprint = self._find_sprint(sprint_number)
+        if not sprint:
             return None
-        s_row = s_res.data[0]
-        sprint_id = s_row["id"]
+        sprint_id = sprint["id"]
 
-        t_res = self.client.table("tasks").select("*, task_assignments(programmer_id, programmers(name))").eq("sprint_id", sprint_id).execute()
-        tasks = []
-        for tr in t_res.data:
-            dev_names = []
-            for ta in tr.get("task_assignments", []):
-                p_info = ta.get("programmers")
-                if p_info:
-                    dev_names.append(p_info["name"])
-            tasks.append(TaskItem(
+        task_rows = self._fetch_all(
+            lambda: self.client.table("tasks")
+            .select("*, task_assignments(programmer_id, programmers(name))")
+            .eq("sprint_id", sprint_id).order("created_at")
+        )
+        tasks = [
+            TaskItem(
                 id=tr["id"],
                 sprint_id=sprint_id,
                 title=tr["title"],
                 status=tr["status"],
-                assigned_programmers=dev_names
-            ))
+                assigned_programmers=sorted(
+                    ta["programmers"]["name"]
+                    for ta in tr.get("task_assignments") or []
+                    if ta.get("programmers")
+                )
+            )
+            for tr in task_rows
+        ]
 
         return SprintDetail(
             id=sprint_id,
-            sprint_number=s_row["sprint_number"],
-            name=s_row["name"],
-            status=s_row["status"],
+            sprint_number=sprint["sprint_number"],
+            name=sprint["name"],
+            status=sprint["status"],
             tasks=tasks
         )
 
     def delete_sprint(self, sprint_number: int) -> bool:
-        res = self.client.table("sprints").delete().eq("sprint_number", sprint_number).execute()
-        return bool(res.data and len(res.data) > 0)
+        sprint = self._find_sprint(sprint_number)
+        if not sprint:
+            return False
+        self.client.table("sprints").delete().eq("id", sprint["id"]).execute()
+        return True
+
+    # -------------------------------------------------------------------------
+    # Métricas
+    # -------------------------------------------------------------------------
+    def _area_assignments(self, programmer_id: Optional[str] = None) -> List[dict]:
+        def query():
+            q = (
+                self.client.table("task_assignments")
+                .select(
+                    "id, task_id, completed, programmer_id, programmers!inner(name), "
+                    "tasks!inner(id, title, status, created_at, "
+                    "sprints!inner(sprint_number, name, status, area))"
+                )
+                .eq("tasks.sprints.area", self.area)
+            )
+            if programmer_id:
+                q = q.eq("programmer_id", programmer_id)
+            return q.order("id")
+
+        return self._fetch_all(query)
 
     def get_matrix_data(self) -> Tuple[List[int], Dict[int, str], Dict[str, Dict[int, int]], Dict[str, Dict[int, int]], List[str]]:
         progs = [p.name for p in self.get_programmers(active_only=True)]
@@ -177,72 +237,66 @@ class SupabaseMetricsRepository(BaseMetricsRepository):
         completed_data: Dict[str, Dict[int, int]] = {p: {} for p in progs}
         assigned_data: Dict[str, Dict[int, int]] = {p: {} for p in progs}
 
-        # Consulta todas las asignaciones
-        res = self.client.table("task_assignments").select("completed, programmers(name), tasks(status, sprints(sprint_number))").execute()
-        for row in res.data:
-            p_name = row.get("programmers", {}).get("name")
-            t_info = row.get("tasks", {})
-            s_num = t_info.get("sprints", {}).get("sprint_number") if t_info.get("sprints") else None
-
-            if p_name and s_num and p_name in completed_data:
-                is_comp = (t_info.get("status") == "completed" and row.get("completed", True))
-                completed_data[p_name][s_num] = completed_data[p_name].get(s_num, 0) + (1 if is_comp else 0)
-                assigned_data[p_name][s_num] = assigned_data[p_name].get(s_num, 0) + 1
+        for row in self._area_assignments():
+            p_name = row["programmers"]["name"]
+            if p_name not in completed_data:
+                continue
+            task = row["tasks"]
+            s_num = task["sprints"]["sprint_number"]
+            is_comp = task["status"] == "completed" and row.get("completed", True)
+            completed_data[p_name][s_num] = completed_data[p_name].get(s_num, 0) + (1 if is_comp else 0)
+            assigned_data[p_name][s_num] = assigned_data[p_name].get(s_num, 0) + 1
 
         return sprints, sprint_names, completed_data, assigned_data, progs
 
     def get_programmer_history(self, name: str) -> Optional[dict]:
-        clean_name = name.strip()
-        p_res = self.client.table("programmers").select("*").eq("name", clean_name).execute()
-        if not p_res.data:
+        programmer = self._find_programmer(name)
+        if not programmer:
             return None
-        p_row = p_res.data[0]
-        p_id = p_row["id"]
+        p_id = programmer["id"]
 
-        assign_res = self.client.table("task_assignments").select(
-            "task_id, completed, tasks(id, title, status, sprints(sprint_number, name, status))"
-        ).eq("programmer_id", p_id).execute()
+        own = self._area_assignments(programmer_id=p_id)
+        own.sort(key=lambda r: (r["tasks"]["sprints"]["sprint_number"], r["tasks"]["created_at"]))
 
-        sprints_map = {}
+        co_workers: Dict[str, List[str]] = {}
+        task_ids = [r["task_id"] for r in own]
+        for i in range(0, len(task_ids), 100):
+            chunk = task_ids[i:i + 100]
+            others = self._fetch_all(
+                lambda: self.client.table("task_assignments")
+                .select("id, task_id, programmers(name)")
+                .in_("task_id", chunk).neq("programmer_id", p_id).order("id")
+            )
+            for o in others:
+                if o.get("programmers"):
+                    co_workers.setdefault(o["task_id"], []).append(o["programmers"]["name"])
+
+        sprints_map: Dict[int, dict] = {}
         total_completed = 0
-        total_assigned = len(assign_res.data)
-
-        for item in assign_res.data:
-            t = item.get("tasks")
-            if not t:
-                continue
-            s = t.get("sprints")
-            if not s:
-                continue
-
-            s_num = s["sprint_number"]
-            if s_num not in sprints_map:
-                sprints_map[s_num] = {
-                    "sprint_number": s_num,
-                    "sprint_name": s["name"],
-                    "sprint_status": s["status"],
-                    "tasks": []
-                }
-
-            # Buscar compañeros en esa tarea
-            co_res = self.client.table("task_assignments").select("programmers(name)").eq("task_id", t["id"]).neq("programmer_id", p_id).execute()
-            co_workers = [c["programmers"]["name"] for c in co_res.data if c.get("programmers")]
-
-            is_comp = bool(t.get("status") == "completed" and item.get("completed", True))
-            if is_comp:
-                total_completed += 1
-
-            sprints_map[s_num]["tasks"].append({
-                "title": t["title"],
-                "status": t["status"],
+        for item in own:
+            task = item["tasks"]
+            sprint = task["sprints"]
+            s_num = sprint["sprint_number"]
+            entry = sprints_map.setdefault(s_num, {
+                "sprint_number": s_num,
+                "sprint_name": sprint["name"],
+                "sprint_status": sprint["status"],
+                "tasks": []
+            })
+            is_comp = bool(task["status"] == "completed" and item.get("completed", True))
+            total_completed += 1 if is_comp else 0
+            entry["tasks"].append({
+                "title": task["title"],
+                "status": task["status"],
                 "completed": is_comp,
-                "co_workers": co_workers
+                "co_workers": sorted(co_workers.get(item["task_id"], []))
             })
 
         return {
-            "name": p_row["name"],
-            "active": p_row.get("active", True),
+            "name": programmer["name"],
+            "active": programmer.get("active", True),
             "total_completed": total_completed,
-            "total_assigned": total_assigned,
+            "total_assigned": len(own),
             "sprints": list(sprints_map.values())
         }
+

@@ -3,35 +3,29 @@ TaskMetrics CLI - Sistema de Control y Cálculo de Ingresos por Sprint
 """
 
 import argparse
-import os
-import sys
-from dotenv import load_dotenv
 
+from src.core.config import Config
 from src.database.sqlite import SQLiteMetricsRepository
 from src.database.supabase import SupabaseMetricsRepository
 from src.services.metrics_service import TaskMetricsService
-from src.models.schemas import TaskItem
-
-load_dotenv()
 
 
-def get_service():
-    supabase_url = os.environ.get("SUPABASE_URL")
-    supabase_key = os.environ.get("SUPABASE_KEY")
+def get_service(area: str) -> TaskMetricsService:
+    if Config.is_supabase_configured():
+        from supabase import create_client
 
-    if supabase_url and supabase_key and "your-project-ref" not in supabase_url:
-        try:
-            repo = SupabaseMetricsRepository(url=supabase_url, key=supabase_key)
-            return TaskMetricsService(repo)
-        except Exception:
-            return TaskMetricsService(SQLiteMetricsRepository())
-    else:
-        return TaskMetricsService(SQLiteMetricsRepository())
+        client = create_client(Config.SUPABASE_URL, Config.SUPABASE_SERVICE_ROLE_KEY)
+        return TaskMetricsService(SupabaseMetricsRepository(client, area))
+    return TaskMetricsService(SQLiteMetricsRepository(area=area))
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="TaskMetrics: Sistema de Gestión de Sprints y Ponderación de Ingresos"
+    )
+    parser.add_argument(
+        "--area", type=str, default=Config.AREAS[0],
+        help=f"Área sobre la que se opera ({', '.join(Config.AREAS)})"
     )
     subparsers = parser.add_subparsers(dest="command", help="Comandos disponibles")
 
@@ -52,9 +46,37 @@ def main():
     report_cmd.add_argument("--up-to", type=int, default=None, help="Filtrar métricas acumuladas hasta un sprint específico")
     report_cmd.add_argument("--export", type=str, default=None, help="Ruta de archivo para exportar (.csv o .md)")
 
+    # Comando: create-user
+    new_user = subparsers.add_parser(
+        "create-user",
+        help="Crear una cuenta (sirve para dar de alta al primer administrador)"
+    )
+    new_user.add_argument("email", type=str, help="Correo de la cuenta")
+    new_user.add_argument("name", type=str, help="Nombre visible")
+    new_user.add_argument("--role", choices=["admin", "lider"], default="lider")
+    new_user.add_argument("--password", type=str, default=None, help="Si se omite, se pide por teclado")
+
     args = parser.parse_args()
 
-    service = get_service()
+    if args.command == "create-user":
+        from getpass import getpass
+        from src.services.auth_service import SupabaseAuthService
+
+        password = args.password or getpass("Contraseña: ")
+        try:
+            result = SupabaseAuthService().create_user(
+                email=args.email,
+                password=password,
+                name=args.name,
+                role=args.role,
+                area=args.area if args.role == "lider" else None,
+            )
+        except ValueError as e:
+            parser.exit(1, f"[Error] {e}\n")
+        print(f"[Éxito] {result['message']}")
+        return
+
+    service = get_service(args.area.strip().lower())
 
     if not args.command or args.command == "report":
         up_to = getattr(args, "up_to", None)
