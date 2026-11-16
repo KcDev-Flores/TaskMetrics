@@ -374,6 +374,8 @@ function applyActiveTabUI() {
       }
     }
   });
+  // Reasignar className arriba borra "hidden": la pestaña Usuarios es solo del admin
+  document.getElementById("tab-btn-usuarios")?.classList.toggle("hidden", currentUser?.role !== "admin");
 }
 
 // -----------------------------------------------------------------------------
@@ -932,7 +934,7 @@ async function openDevHistoryModal(name) {
               </span>
               <span class="text-xs font-semibold text-white">${s.sprint_name}</span>
             </div>
-            <span class="text-[11px] text-slate-400">${s.tasks.length} tarea(s) realizada(s)</span>
+            <span class="text-[11px] text-slate-400">${s.tasks.filter(t => t.completed).length} de ${s.tasks.length} tarea(s) realizada(s)</span>
           </div>
           <div class="space-y-1.5">
             ${tasksListHtml}
