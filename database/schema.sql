@@ -9,6 +9,33 @@
 -- públicas (anon / authenticated) no pueden leer ni escribir estas tablas.
 -- ==============================================================================
 
+-- Antes de tocar nada: las versiones anteriores permitían 'Capo' y 'capo' como
+-- integrantes distintos. Ahora el nombre es único sin distinguir mayúsculas, y
+-- fusionar personas automáticamente alteraría sus evaluaciones.
+DO $$
+DECLARE
+    duplicated TEXT;
+BEGIN
+    IF to_regclass('public.programmers') IS NOT NULL
+       AND to_regclass('public.uq_programmers_area_name') IS NULL
+    THEN
+        EXECUTE $q$
+            SELECT string_agg(names, '; ')
+            FROM (
+                SELECT string_agg(name, ' / ' ORDER BY name) AS names
+                FROM public.programmers
+                GROUP BY lower(name)
+                HAVING count(*) > 1
+            ) repeated
+        $q$ INTO duplicated;
+        IF duplicated IS NOT NULL THEN
+            RAISE EXCEPTION
+                'Hay integrantes repetidos que solo difieren en mayúsculas: %. Renombra o elimina los sobrantes y vuelve a ejecutar este script; no se ha modificado nada.',
+                duplicated;
+        END IF;
+    END IF;
+END $$;
+
 -- 0. Perfiles de usuario: rol y área de cada cuenta de Supabase Auth
 CREATE TABLE IF NOT EXISTS user_profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
