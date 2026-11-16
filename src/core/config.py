@@ -19,9 +19,12 @@ class Config:
     AREAS: List[str] = [
         a.strip().lower() for a in os.getenv("AREAS", DEFAULT_AREAS).split(",") if a.strip()
     ]
+    # Supabase Auth identifica las cuentas por correo: cada nombre de usuario se
+    # registra allí como <usuario>@<este dominio>. Nadie recibe ni escribe ese correo.
+    LOGIN_EMAIL_DOMAIN: str = os.getenv("LOGIN_EMAIL_DOMAIN", "usuarios.taskmetrics.local").strip().lower()
     # Solo modo local (sin Supabase)
     SQLITE_PATH: Optional[str] = os.getenv("TASKMETRICS_DB_PATH") or None
-    LOCAL_ADMIN_EMAIL: str = os.getenv("LOCAL_ADMIN_EMAIL", "admin@taskmetrics.com").strip().lower()
+    LOCAL_ADMIN_USERNAME: str = os.getenv("LOCAL_ADMIN_USERNAME", "admin").strip().lower()
     LOCAL_ADMIN_PASSWORD: str = os.getenv("LOCAL_ADMIN_PASSWORD", "admin123")
 
     @classmethod

@@ -108,7 +108,7 @@ def create_app() -> FastAPI:
     @app.post("/api/auth/login")
     async def login_user(payload: UserCredentials):
         try:
-            return auth_service.sign_in(payload.email, payload.password)
+            return auth_service.sign_in(payload.username, payload.password)
         except ValueError as e:
             raise HTTPException(status_code=401, detail=str(e))
 
@@ -157,7 +157,7 @@ def create_app() -> FastAPI:
     async def create_system_user(payload: UserCreateAdmin, admin: dict = Depends(require_admin)):
         try:
             return auth_service.create_user(
-                email=payload.email,
+                username=payload.username,
                 password=payload.password,
                 name=payload.name,
                 role=payload.role,

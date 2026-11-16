@@ -51,7 +51,7 @@ def main():
         "create-user",
         help="Crear una cuenta (sirve para dar de alta al primer administrador)"
     )
-    new_user.add_argument("email", type=str, help="Correo de la cuenta")
+    new_user.add_argument("username", type=str, help="Nombre de usuario para iniciar sesión")
     new_user.add_argument("name", type=str, help="Nombre visible")
     new_user.add_argument("--role", choices=["admin", "lider"], default="lider")
     new_user.add_argument("--password", type=str, default=None, help="Si se omite, se pide por teclado")
@@ -65,7 +65,7 @@ def main():
         password = args.password or getpass("Contraseña: ")
         try:
             result = SupabaseAuthService().create_user(
-                email=args.email,
+                username=args.username,
                 password=password,
                 name=args.name,
                 role=args.role,

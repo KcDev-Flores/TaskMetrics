@@ -13,7 +13,7 @@ from .base import BaseMetricsRepository
 
 DEFAULT_AREA = "general"
 _HASH_PREFIX = "pbkdf2$"
-_PROFILE_COLUMNS = "id, email, name, role, area, active, created_at"
+_PROFILE_COLUMNS = "id, username, name, role, area, active, created_at"
 
 
 def hash_password(password: str) -> str:
@@ -120,6 +120,11 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
     def _init_db(self):
         with self._get_connection() as conn:
             self._migrate_legacy_schema(conn)
+            # Antes las cuentas se identificaban por correo; el valor se conserva como usuario
+            legacy_profile = [r["name"] for r in conn.execute("PRAGMA table_info(user_profiles)")]
+            if "email" in legacy_profile and "username" not in legacy_profile:
+                conn.execute("ALTER TABLE user_profiles RENAME COLUMN email TO username")
+                conn.commit()
             conn.executescript(self._SCOPED_TABLES_DDL + """
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
@@ -140,7 +145,7 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
 
                 CREATE TABLE IF NOT EXISTS user_profiles (
                     id TEXT PRIMARY KEY,
-                    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
                     name TEXT NOT NULL,
                     role TEXT NOT NULL DEFAULT 'lider',
                     area TEXT,
@@ -166,10 +171,10 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
             cur.execute("SELECT COUNT(*) as count FROM user_profiles")
             if cur.fetchone()["count"] == 0:
                 cur.execute(
-                    "INSERT INTO user_profiles (id, email, name, role, password, active) VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO user_profiles (id, username, name, role, password, active) VALUES (?, ?, ?, ?, ?, ?)",
                     (
                         str(uuid4()),
-                        Config.LOCAL_ADMIN_EMAIL,
+                        Config.LOCAL_ADMIN_USERNAME,
                         "Administrador Principal",
                         "admin",
                         hash_password(Config.LOCAL_ADMIN_PASSWORD),
@@ -472,11 +477,11 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
         profile["active"] = bool(profile["active"])
         return profile
 
-    def get_user_profile(self, user_id_or_email: str) -> Optional[dict]:
+    def get_user_profile(self, user_id_or_username: str) -> Optional[dict]:
         with self._get_connection() as conn:
             row = conn.execute(
-                f"SELECT {_PROFILE_COLUMNS} FROM user_profiles WHERE id = ? OR LOWER(email) = LOWER(?)",
-                (user_id_or_email, user_id_or_email)
+                f"SELECT {_PROFILE_COLUMNS} FROM user_profiles WHERE id = ? OR LOWER(username) = LOWER(?)",
+                (user_id_or_username, user_id_or_username)
             ).fetchone()
             return self._profile(row)
 
@@ -485,11 +490,11 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
             rows = conn.execute(f"SELECT {_PROFILE_COLUMNS} FROM user_profiles ORDER BY name ASC").fetchall()
             return [self._profile(r) for r in rows]
 
-    def verify_credentials(self, email: str, password: str) -> Optional[dict]:
+    def verify_credentials(self, username: str, password: str) -> Optional[dict]:
         """Devuelve el perfil si la contraseña es correcta; None en caso contrario."""
         with self._get_connection() as conn:
             row = conn.execute(
-                "SELECT id, password FROM user_profiles WHERE LOWER(email) = LOWER(?)", (email,)
+                "SELECT id, password FROM user_profiles WHERE LOWER(username) = LOWER(?)", (username,)
             ).fetchone()
             if not row or not _password_matches(row["password"], password):
                 return None
@@ -503,7 +508,7 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
 
     def create_user_profile(
         self,
-        email: str,
+        username: str,
         name: str,
         role: str,
         area: Optional[str],
@@ -513,12 +518,12 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
         with self._get_connection() as conn:
             try:
                 conn.execute(
-                    "INSERT INTO user_profiles (id, email, name, role, area, password, active) VALUES (?, ?, ?, ?, ?, ?, 1)",
-                    (user_id, email.lower(), name, role, area, hash_password(password))
+                    "INSERT INTO user_profiles (id, username, name, role, area, password, active) VALUES (?, ?, ?, ?, ?, ?, 1)",
+                    (user_id, username.lower(), name, role, area, hash_password(password))
                 )
                 conn.commit()
             except sqlite3.IntegrityError:
-                raise ValueError(f"Ya existe un usuario con el correo {email}.")
+                raise ValueError(f"Ya existe el usuario '{username}'.")
         return self.get_user_profile(user_id)
 
     def update_user_profile(self, user_id: str, changes: Dict[str, Any]) -> bool:

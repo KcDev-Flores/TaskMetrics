@@ -105,6 +105,7 @@ Abre tu navegador en:
 - **Admin:** es el único que crea, edita o elimina usuarios (pestaña **Usuarios**). Ve y edita todas las áreas con el selector **Área** de la cabecera.
 - **Líder:** pertenece a un área (`diseñador`, `blockbench`, `builder`, `doblaje`; configurable con `AREAS`). Solo ve y evalúa a los integrantes y sprints de su área; el porcentaje de esfuerzo se calcula dentro de ella.
 - No existe registro público: una cuenta sin perfil creado por el admin no puede entrar.
+- Se entra con **nombre de usuario y contraseña**, sin correo (por ejemplo `admin.cafeestudio`).
 
 Los integrantes y la numeración de sprints son independientes en cada área.
 
@@ -112,12 +113,12 @@ Los integrantes y la numeración de sprints son independientes en cada área.
 
 ## 🔐 Autenticación y Acceso a Datos
 
-- Las cuentas viven en **Supabase Auth**; el rol y el área están en la tabla `user_profiles`.
+- Las cuentas viven en **Supabase Auth**; el usuario, el rol y el área están en la tabla `user_profiles`. Como Supabase Auth identifica las cuentas por correo, cada usuario se registra allí como `<usuario>@<LOGIN_EMAIL_DOMAIN>`; ese correo interno nunca se escribe ni recibe mensajes.
 - El backend FastAPI es la única puerta a los datos: valida el token en cada petición, aplica el área del usuario y accede a Supabase con la llave `service_role`.
 - [`database/schema.sql`](database/schema.sql) activa RLS sin políticas, así que las llaves públicas (`anon` / `authenticated`) no pueden leer ni escribir las tablas directamente.
 - Endpoints de sesión: `POST /api/auth/login`, `POST /api/auth/refresh`, `POST /api/auth/logout`, `GET /api/auth/me`. La interfaz renueva el token de acceso automáticamente cuando caduca.
 - Todas las rutas de datos (`/api/metrics`, `/api/sprints`, `/api/programmers`, `/api/export`) exigen `Authorization: Bearer <token>`; el admin añade `?area=<área>`.
-- **Modo local (sin Supabase):** si faltan las variables de Supabase, los datos y usuarios se guardan en SQLite (`database/taskmetrics.db`) con un admin inicial (`LOCAL_ADMIN_EMAIL` / `LOCAL_ADMIN_PASSWORD`, por defecto `admin@taskmetrics.com` / `admin123`). Es solo para desarrollo: no lo despliegues así.
+- **Modo local (sin Supabase):** si faltan las variables de Supabase, los datos y usuarios se guardan en SQLite (`database/taskmetrics.db`) con un admin inicial (`LOCAL_ADMIN_USERNAME` / `LOCAL_ADMIN_PASSWORD`, por defecto `admin` / `admin123`). Es solo para desarrollo: no lo despliegues así.
 
 ---
 
@@ -132,7 +133,7 @@ Los integrantes y la numeración de sprints son independientes en cada área.
    ```
 3. Crea el primer administrador (después podrás crear al resto desde la web):
    ```powershell
-   python main.py create-user tu-correo@ejemplo.com "Tu Nombre" --role admin
+   python main.py create-user admin.cafeestudio "Tu Nombre" --role admin
    ```
 4. Inicia la aplicación con `python run.py` y entra con esa cuenta.
 

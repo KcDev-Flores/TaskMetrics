@@ -210,9 +210,9 @@ function updateAuthUI() {
       userBadge.classList.add("flex");
     }
     if (nameDisplay) {
-      const displayName = currentUser.name || currentUser.email.split("@")[0];
+      const displayName = currentUser.name || currentUser.username;
       nameDisplay.textContent = displayName;
-      nameDisplay.title = `${displayName} (${currentUser.email})`;
+      nameDisplay.title = `${displayName} (${currentUser.username})`;
     }
     if (roleBadge) {
       if (currentUser.role === "admin") {
@@ -250,18 +250,18 @@ function updateAuthUI() {
 }
 
 async function submitCleanLogin() {
-  const emailInput = document.getElementById("login-input-email");
+  const usernameInput = document.getElementById("login-input-username");
   const passwordInput = document.getElementById("login-input-password");
   const errorAlert = document.getElementById("login-error-alert");
   const errorText = document.getElementById("login-error-text");
   const submitBtn = document.getElementById("btn-login-submit");
   const submitText = document.getElementById("btn-login-text");
 
-  const email = emailInput?.value.trim();
+  const username = usernameInput?.value.trim();
   const password = passwordInput?.value;
 
-  if (!email || !password) {
-    if (errorText) errorText.textContent = "Por favor ingresa tu correo y contraseña.";
+  if (!username || !password) {
+    if (errorText) errorText.textContent = "Por favor ingresa tu usuario y contraseña.";
     errorAlert?.classList.remove("hidden");
     return;
   }
@@ -274,12 +274,12 @@ async function submitCleanLogin() {
     const res = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password })
+      body: JSON.stringify({ username, password })
     });
 
     const data = await res.json();
     if (!res.ok) {
-      throw new Error(data.detail || "Error en el inicio de sesión.");
+      throw new Error(typeof data.detail === "string" ? data.detail : "Error en el inicio de sesión.");
     }
 
     setStoredToken(data.access_token);
@@ -290,7 +290,7 @@ async function submitCleanLogin() {
 
     await loadAreas();
     updateAuthUI();
-    showToast(`¡Bienvenido/a, ${currentUser.name || currentUser.email}!`);
+    showToast(`¡Bienvenido/a, ${currentUser.name || currentUser.username}!`);
     loadDashboard();
   } catch (err) {
     if (errorText) errorText.textContent = err.message || "Error al iniciar sesión.";
@@ -1417,7 +1417,7 @@ function renderUsersTable() {
       : '<span class="text-rose-400 flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span> Inactivo</span>';
 
     const escapedName = escapeHtml(u.name || "Sin nombre");
-    const escapedEmail = escapeHtml(u.email);
+    const escapedUsername = escapeHtml(u.username);
     const areaCell = u.role === "admin"
       ? '<span class="text-slate-500">Todas</span>'
       : (u.area ? escapeHtml(areaLabel(u.area)) : '<span class="text-rose-400">Sin área</span>');
@@ -1434,7 +1434,7 @@ function renderUsersTable() {
             ${isMe ? '<span class="text-[10px] text-emerald-400 font-semibold">(Tú)</span>' : ''}
           </div>
         </td>
-        <td class="py-3.5 px-4 text-slate-300">${escapedEmail}</td>
+        <td class="py-3.5 px-4 text-slate-300 font-mono">${escapedUsername}</td>
         <td class="py-3.5 px-4">${roleBadge}</td>
         <td class="py-3.5 px-4 text-slate-300">${areaCell}</td>
         <td class="py-3.5 px-4">${statusBadge}</td>
@@ -1482,14 +1482,14 @@ function openModalCreateUser() {
 
 async function submitAdminCreateUser() {
   const name = document.getElementById("admin-user-name")?.value.trim();
-  const email = document.getElementById("admin-user-email")?.value.trim();
+  const username = document.getElementById("admin-user-username")?.value.trim().toLowerCase();
   const password = document.getElementById("admin-user-password")?.value;
   const role = document.getElementById("admin-user-role")?.value || "lider";
   const area = role === "lider" ? document.getElementById("admin-user-area")?.value : null;
   const errBox = document.getElementById("admin-create-user-error");
   const submitBtn = document.getElementById("btn-submit-create-user");
 
-  if (!name || !email || !password) {
+  if (!name || !username || !password) {
     if (errBox) {
       errBox.textContent = "Por favor completa todos los campos requeridos.";
       errBox.classList.remove("hidden");
@@ -1504,18 +1504,18 @@ async function submitAdminCreateUser() {
     const res = await authFetch("/api/admin/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, name, role, area })
+      body: JSON.stringify({ username, password, name, role, area })
     });
 
     const data = await res.json();
     if (!res.ok) {
-      throw new Error(data.detail || "No se pudo crear el usuario.");
+      throw new Error(typeof data.detail === "string" ? data.detail : "No se pudo crear el usuario. Revisa los datos.");
     }
 
     closeModal("modal-admin-create-user");
     const created = data.user || {};
     const roleText = created.role === "admin" ? "Administrador" : `Líder de ${areaLabel(created.area)}`;
-    showToast(`¡Usuario ${created.name || created.email} creado como ${roleText}!`);
+    showToast(`¡Usuario ${created.username} creado como ${roleText}!`);
     loadUsersList();
   } catch (err) {
     if (errBox) {
@@ -1537,7 +1537,7 @@ function openModalEditUser(user) {
 
   document.getElementById("edit-user-id").value = user.id;
   document.getElementById("edit-user-name").value = user.name || "";
-  document.getElementById("edit-user-email").value = user.email || "";
+  document.getElementById("edit-user-username").value = user.username || "";
   document.getElementById("edit-user-role").value = user.role || "lider";
   const areaSelect = document.getElementById("edit-user-area");
   if (areaSelect && user.area) areaSelect.value = user.area;

@@ -6,6 +6,7 @@ Autenticación y gestión de usuarios (roles: admin y líder de área).
 - Sin Supabase (modo local de desarrollo) todo se guarda en SQLite.
 """
 
+import re
 from typing import Any, Dict, List, Optional
 
 from src.core.config import Config
@@ -13,6 +14,16 @@ from src.database.sqlite import SQLiteMetricsRepository
 
 ROLES = ("admin", "lider")
 MIN_PASSWORD_LENGTH = 6
+USERNAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,31}$")
+
+
+def auth_email(username: str) -> str:
+    """Correo con el que una cuenta existe en Supabase Auth.
+
+    Las cuentas creadas cuando el sistema pedía correo conservan el suyo como usuario.
+    """
+    username = username.strip().lower()
+    return username if "@" in username else f"{username}@{Config.LOGIN_EMAIL_DOMAIN}"
 
 
 class SupabaseAuthService:
@@ -54,7 +65,7 @@ class SupabaseAuthService:
     def _public_user(profile: dict) -> Dict[str, Any]:
         return {
             "id": str(profile["id"]),
-            "email": profile["email"],
+            "username": profile["username"],
             "name": profile["name"],
             "role": profile["role"],
             "area": profile.get("area"),
@@ -83,17 +94,19 @@ class SupabaseAuthService:
     # -------------------------------------------------------------------------
     # Sesión
     # -------------------------------------------------------------------------
-    def sign_in(self, email: str, password: str) -> Dict[str, Any]:
-        email = email.strip().lower()
+    def sign_in(self, username: str, password: str) -> Dict[str, Any]:
+        username = username.strip().lower()
 
         if self.is_configured:
             from supabase_auth.errors import AuthApiError
 
             try:
-                res = self._anon_client().auth.sign_in_with_password({"email": email, "password": password})
+                res = self._anon_client().auth.sign_in_with_password(
+                    {"email": auth_email(username), "password": password}
+                )
             except AuthApiError as e:
                 if "invalid login credentials" in str(e).lower():
-                    raise ValueError("Correo o contraseña incorrectos.")
+                    raise ValueError("Usuario o contraseña incorrectos.")
                 raise ValueError(f"Supabase rechazó el inicio de sesión: {e}")
             if not res.session or not res.user:
                 raise ValueError("Credenciales inválidas o cuenta no verificada.")
@@ -104,9 +117,9 @@ class SupabaseAuthService:
                 getattr(res.session, "expires_in", 3600)
             )
 
-        profile = self.local.verify_credentials(email, password)
+        profile = self.local.verify_credentials(username, password)
         if not profile:
-            raise ValueError("Correo o contraseña incorrectos.")
+            raise ValueError("Usuario o contraseña incorrectos.")
         if not profile["active"]:
             raise ValueError("Tu cuenta ha sido desactivada por el administrador.")
         return self._session_payload(
@@ -196,11 +209,13 @@ class SupabaseAuthService:
             profiles = self.local.list_user_profiles()
         return [{**self._public_user(p), "created_at": p.get("created_at")} for p in profiles]
 
-    def create_user(self, email: str, password: str, name: str, role: str = "lider", area: Optional[str] = None) -> Dict[str, Any]:
-        email = email.strip().lower()
+    def create_user(self, username: str, password: str, name: str, role: str = "lider", area: Optional[str] = None) -> Dict[str, Any]:
+        username = username.strip().lower()
         name = name.strip()
-        if not email or "@" not in email:
-            raise ValueError("Correo electrónico inválido.")
+        if not USERNAME_PATTERN.match(username):
+            raise ValueError(
+                "El usuario debe tener de 3 a 32 caracteres: letras minúsculas, números, punto, guion o guion bajo."
+            )
         if not name:
             raise ValueError("El nombre es obligatorio.")
         if len(password) < MIN_PASSWORD_LENGTH:
@@ -212,21 +227,21 @@ class SupabaseAuthService:
 
             try:
                 created = self.db.auth.admin.create_user({
-                    "email": email,
+                    "email": auth_email(username),
                     "password": password,
                     "email_confirm": True,
                     "user_metadata": {"name": name},
                 })
             except AuthApiError as e:
                 if "already" in str(e).lower():
-                    raise ValueError(f"Ya existe un usuario con el correo {email}.")
+                    raise ValueError(f"Ya existe el usuario '{username}'.")
                 raise ValueError(f"Supabase no pudo crear la cuenta: {e}")
 
             user_id = str(created.user.id)
             try:
                 res = self.db.table("user_profiles").upsert({
                     "id": user_id,
-                    "email": email,
+                    "username": username,
                     "name": name,
                     "role": role,
                     "area": area,
@@ -238,7 +253,7 @@ class SupabaseAuthService:
                 raise
             profile = res.data[0]
         else:
-            profile = self.local.create_user_profile(email, name, role, area, password)
+            profile = self.local.create_user_profile(username, name, role, area, password)
 
         return {
             "status": "success",

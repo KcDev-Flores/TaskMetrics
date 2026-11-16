@@ -114,7 +114,7 @@ class TestWebAPI(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(create_app())
         login_res = self.client.post("/api/auth/login", json={
-            "email": "admin@taskmetrics.com",
+            "username": "admin",
             "password": "admin123"
         })
         self.token = login_res.json()["access_token"]

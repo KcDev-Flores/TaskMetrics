@@ -12,6 +12,7 @@ os.environ["TASKMETRICS_DB_PATH"] = _db.name
 # Vacías (no ausentes) para que un .env real no conecte las pruebas a Supabase
 for _name in ("SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_SERVICE_ROLE_KEY"):
     os.environ[_name] = ""
-os.environ["LOCAL_ADMIN_EMAIL"] = "admin@taskmetrics.com"
+os.environ["LOCAL_ADMIN_USERNAME"] = "admin"
 os.environ["LOCAL_ADMIN_PASSWORD"] = "admin123"
-os.environ.pop("AREAS", None)
+for _name in ("AREAS", "LOGIN_EMAIL_DOMAIN"):
+    os.environ.pop(_name, None)

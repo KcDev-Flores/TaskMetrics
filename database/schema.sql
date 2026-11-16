@@ -39,7 +39,9 @@ END $$;
 -- 0. Perfiles de usuario: rol y área de cada cuenta de Supabase Auth
 CREATE TABLE IF NOT EXISTS user_profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-    email TEXT NOT NULL UNIQUE,
+    -- Nombre con el que se inicia sesión. En Supabase Auth la cuenta existe como
+    -- <username>@<LOGIN_EMAIL_DOMAIN>; ese correo interno nunca se usa ni se muestra.
+    username TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('admin', 'lider')) DEFAULT 'lider',
     area TEXT, -- NULL para el admin; obligatoria para un líder
@@ -47,6 +49,21 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     created_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc'::text, now())
 );
 ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS area TEXT;
+
+-- Versiones anteriores identificaban la cuenta por correo: el valor se conserva
+-- como nombre de usuario, así que esas cuentas siguen entrando con su correo.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'user_profiles' AND column_name = 'email'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'user_profiles' AND column_name = 'username'
+    ) THEN
+        ALTER TABLE public.user_profiles RENAME COLUMN email TO username;
+    END IF;
+END $$;
 
 -- Versiones anteriores creaban el perfil con un trigger que tomaba el rol de los
 -- metadatos editables por el usuario. Los perfiles los crea ahora solo el backend.

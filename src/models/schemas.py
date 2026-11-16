@@ -92,7 +92,7 @@ class SprintUpdateRequest(BaseModel):
 
 
 class UserCredentials(BaseModel):
-    email: str = Field(..., description="Correo electrónico del usuario")
+    username: str = Field(..., min_length=1, description="Nombre de usuario")
     password: str = Field(..., min_length=1, description="Contraseña")
 
 
@@ -110,7 +110,7 @@ class AuthResponse(BaseModel):
 
 
 class UserCreateAdmin(BaseModel):
-    email: str = Field(..., description="Correo electrónico del usuario")
+    username: str = Field(..., min_length=1, description="Nombre de usuario para iniciar sesión")
     password: str = Field(..., min_length=6, description="Contraseña temporal inicial")
     name: str = Field(..., min_length=1, description="Nombre o alias del integrante")
     role: str = Field(default="lider", description="Rol del usuario ('admin' o 'lider')")

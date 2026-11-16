@@ -50,10 +50,10 @@
       <!-- Formulario de Acceso Directo -->
       <form id="form-clean-login" onsubmit="event.preventDefault(); submitCleanLogin();" class="space-y-4">
         <div>
-          <label class="block text-xs font-medium text-slate-300 mb-1.5">Correo Electrónico</label>
-          <input type="email" id="login-input-email" required autocomplete="email"
+          <label class="block text-xs font-medium text-slate-300 mb-1.5">Usuario</label>
+          <input type="text" id="login-input-username" required autocomplete="username" autocapitalize="none" spellcheck="false"
                  class="w-full bg-slate-950 border border-slate-700/80 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
-                 placeholder="tu-correo@empresa.com">
+                 placeholder="tu.usuario">
         </div>
         <div>
           <label class="block text-xs font-medium text-slate-300 mb-1.5">Contraseña</label>
@@ -459,7 +459,7 @@
             <thead>
               <tr class="border-b border-slate-800 bg-slate-950/80 text-slate-400 uppercase tracking-wider font-semibold">
                 <th class="py-3.5 px-4">Nombre / Integrante</th>
-                <th class="py-3.5 px-4">Correo Electrónico</th>
+                <th class="py-3.5 px-4">Usuario</th>
                 <th class="py-3.5 px-4">Rol Asignado</th>
                 <th class="py-3.5 px-4">Área</th>
                 <th class="py-3.5 px-4">Estado</th>
@@ -734,8 +734,9 @@
           <input type="text" id="admin-user-name" required class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="Ej. Capo, Fabi, Dylan...">
         </div>
         <div>
-          <label class="block text-xs font-medium text-slate-300 mb-1">Correo Electrónico</label>
-          <input type="email" id="admin-user-email" required class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="usuario@equipo.com">
+          <label class="block text-xs font-medium text-slate-300 mb-1">Usuario para iniciar sesión</label>
+          <input type="text" id="admin-user-username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9._\-]{2,31}" autocapitalize="none" spellcheck="false" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="ej. lider.builder">
+          <p class="text-[11px] text-slate-500 mt-0.5">3 a 32 caracteres: letras, números, punto, guion o guion bajo. No hace falta correo.</p>
         </div>
         <div>
           <label class="block text-xs font-medium text-slate-300 mb-1">Contraseña Inicial</label>
@@ -783,8 +784,8 @@
           <input type="text" id="edit-user-name" required class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500">
         </div>
         <div>
-          <label class="block text-xs font-medium text-slate-300 mb-1">Correo Electrónico</label>
-          <input type="text" id="edit-user-email" disabled class="w-full bg-slate-950/60 border border-slate-800 rounded-lg px-3 py-2 text-slate-500 text-sm cursor-not-allowed">
+          <label class="block text-xs font-medium text-slate-300 mb-1">Usuario</label>
+          <input type="text" id="edit-user-username" disabled class="w-full bg-slate-950/60 border border-slate-800 rounded-lg px-3 py-2 text-slate-500 text-sm cursor-not-allowed">
         </div>
         <div>
           <label class="block text-xs font-medium text-slate-300 mb-1">Rol</label>
@@ -825,6 +826,6 @@
   <div id="toast-container" class="fixed bottom-5 right-5 z-50 space-y-2"></div>
 
   <!-- Script de la Aplicación -->
-  <script src="/static/js/app.js?v=2.1"></script>
+  <script src="/static/js/app.js?v=2.2"></script>
 </body>
 </html>
