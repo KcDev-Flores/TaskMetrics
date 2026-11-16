@@ -34,11 +34,12 @@ def create_app() -> FastAPI:
     )
 
     def known_areas() -> list:
-        """Áreas configuradas más las que ya tengan datos en el modo local."""
-        areas = list(Config.AREAS)
-        if not auth_service.is_configured:
-            areas += [a for a in auth_service.local.list_areas() if a not in areas]
-        return areas
+        """Áreas configuradas más las que ya tengan datos (p. ej. 'general' tras una migración)."""
+        if auth_service.is_configured:
+            with_data = SupabaseMetricsRepository.list_areas(auth_service.db)
+        else:
+            with_data = auth_service.local.list_areas()
+        return Config.AREAS + [a for a in with_data if a not in Config.AREAS]
 
     def resolve_area(current_user: dict, requested: Optional[str]) -> str:
         """Un líder siempre opera sobre su área; el admin elige cuál consultar."""
@@ -51,9 +52,14 @@ def create_app() -> FastAPI:
                 )
             return area
 
-        areas = known_areas()
-        area = (requested or "").strip().lower() or (areas[0] if areas else "")
-        if area not in areas:
+        area = (requested or "").strip().lower()
+        if not area:
+            areas = Config.AREAS or known_areas()
+            if not areas:
+                raise HTTPException(status_code=400, detail="No hay áreas configuradas (variable AREAS).")
+            return areas[0]
+        # Solo se consultan los datos cuando el área pedida no es una de las configuradas
+        if area not in Config.AREAS and area not in known_areas():
             raise HTTPException(status_code=400, detail=f"Área desconocida: '{requested}'.")
         return area
 

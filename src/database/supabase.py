@@ -21,7 +21,17 @@ class SupabaseMetricsRepository(BaseMetricsRepository):
         self.client = client
         self.area = area.strip().lower()
 
-    def _fetch_all(self, build_query) -> List[dict]:
+    @classmethod
+    def list_areas(cls, client: Any) -> List[str]:
+        """Áreas con integrantes o sprints; incluye 'general' tras migrar una base sin áreas."""
+        areas = set()
+        for table in ("programmers", "sprints"):
+            rows = cls._fetch_all(lambda: client.table(table).select("area").order("id"))
+            areas.update(row["area"] for row in rows)
+        return sorted(areas)
+
+    @staticmethod
+    def _fetch_all(build_query) -> List[dict]:
         """Recorre todas las páginas: PostgREST devuelve como máximo 1000 filas por petición."""
         rows: List[dict] = []
         start = 0

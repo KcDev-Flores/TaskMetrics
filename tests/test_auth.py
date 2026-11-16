@@ -1,6 +1,9 @@
 import unittest
 from fastapi.testclient import TestClient
 
+from src.database.sqlite import SQLiteMetricsRepository
+from src.database.supabase import SupabaseMetricsRepository
+from src.models.schemas import TaskItem
 from src.web.app import create_app
 
 ADMIN = {"email": "admin@taskmetrics.com", "password": "admin123"}
@@ -138,6 +141,50 @@ class TestAuthAndAreas(unittest.TestCase):
         areas = self.client.get("/api/areas", headers=admin_headers).json()["areas"]
         self.assertTrue({"diseñador", "blockbench", "builder", "doblaje"} <= set(areas))
         self.assertEqual(self.client.get("/api/areas", headers=builder).json()["areas"], ["builder"])
+
+    def test_admin_reaches_migrated_data_outside_configured_areas(self):
+        # Una base anterior a las áreas se migra al área 'general', que no está configurada
+        SQLiteMetricsRepository(area="general").save_sprint_with_tasks(
+            7, "Sprint heredado", "completed", [TaskItem("Tarea vieja", "completed", ["Veterano"])]
+        )
+        admin_headers, _ = self.login(**ADMIN)
+        self.assertIn("general", self.client.get("/api/areas", headers=admin_headers).json()["areas"])
+        metrics = self.client.get("/api/metrics?area=general", headers=admin_headers)
+        self.assertEqual(metrics.status_code, 200, metrics.text)
+        self.assertEqual(metrics.json()["programmers"], ["Veterano"])
+        export = self.client.get("/api/export?format=csv&area=general", headers=admin_headers)
+        self.assertIn("Veterano", export.text)
+
+    def test_supabase_areas_include_those_with_data(self):
+        class FakeQuery:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def select(self, *_):
+                return self
+
+            def order(self, *_):
+                return self
+
+            def range(self, start, end):
+                self.page = self.rows[start:end + 1]
+                return self
+
+            def execute(self):
+                return type("Result", (), {"data": self.page})()
+
+        class FakeClient:
+            tables = {
+                "programmers": [{"area": "general"}] * 1001 + [{"area": "builder"}],
+                "sprints": [{"area": "doblaje"}],
+            }
+
+            def table(self, name):
+                return FakeQuery(self.tables[name])
+
+        self.assertEqual(
+            SupabaseMetricsRepository.list_areas(FakeClient()), ["builder", "doblaje", "general"]
+        )
 
     def test_admin_edits_and_deactivates_user(self):
         admin_headers, admin_session = self.login(**ADMIN)
