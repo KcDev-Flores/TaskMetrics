@@ -28,6 +28,13 @@ def auth_email(username: str) -> str:
 
 class SupabaseAuthService:
     def __init__(self):
+        missing = Config.missing_supabase_settings()
+        if missing:
+            # Arrancar en modo local aquí dejaría un despliegue con una base vacía y sin las cuentas reales
+            raise RuntimeError(
+                f"SUPABASE_URL está definida pero falta {' y '.join(missing)}. "
+                "Define las tres variables de Supabase, o ninguna para usar el modo local."
+            )
         self.is_configured = Config.is_supabase_configured()
         self.db: Any = None
         self._local: Optional[SQLiteMetricsRepository] = None

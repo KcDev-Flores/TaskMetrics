@@ -42,7 +42,6 @@ TaskMetrics/
 │   └── test_metrics.py
 ├── database/                  # 🗄️ Scripts SQL
 │   └── schema.sql             # Tablas, áreas, migración y RLS (solo backend)
-├── .env.example               # Plantilla de credenciales Supabase
 ├── .gitignore                 # Exclusiones de Git
 ├── requirements.txt           # Dependencias de producción
 ├── run.py                     # 🌐 Servidor Web principal (FastAPI)
@@ -125,19 +124,36 @@ Los integrantes y la numeración de sprints son independientes en cada área.
 ## ☁️ Conexión con Supabase
 
 1. En tu proyecto de Supabase abre **SQL Editor**, pega el contenido de [`database/schema.sql`](database/schema.sql) y pulsa **Run**. Se puede volver a ejecutar sin perder datos; también migra una base creada con una versión anterior.
-2. Copia `.env.example` a `.env` y completa las tres variables:
+2. Define las tres variables de entorno (en un archivo `.env` en local, o en el panel del proveedor al desplegar):
    ```env
    SUPABASE_URL=https://<tu-proyecto>.supabase.co
    SUPABASE_KEY=<llave anon o publishable>
    SUPABASE_SERVICE_ROLE_KEY=<llave service_role o secret>
    ```
+   Si defines `SUPABASE_URL` pero falta alguna de las llaves, la aplicación no arranca y lo indica en el log.
 3. Crea el primer administrador (después podrás crear al resto desde la web):
    ```powershell
    python main.py create-user admin.cafeestudio "Tu Nombre" --role admin
    ```
 4. Inicia la aplicación con `python run.py` y entra con esa cuenta.
 
-En un despliegue define las mismas variables en el proveedor, junto con `HOST=0.0.0.0` y el `PORT` que te asigne. Recomendado: en Supabase → **Authentication → Sign In / Providers** desactiva *Allow new users to sign up* (las cuentas las crea el admin).
+### Despliegue (p. ej. Render)
+
+- Despliega la rama que contiene esta versión y usa `pip install -r requirements.txt` como build y `python run.py` como comando de inicio.
+- Variables: las tres de Supabase y `HOST=0.0.0.0`. `PORT` lo asigna el proveedor.
+- Para comprobarlo abre `/api/auth/status`: debe responder `"supabase_configured": true`.
+
+Variables opcionales:
+
+| Variable | Por defecto | Para qué sirve |
+|---|---|---|
+| `STUDIO_NAME` | `Café Estudio` | Nombre que se muestra en la interfaz |
+| `AREAS` | `diseñador,blockbench,builder,doblaje` | Áreas que se pueden asignar a un líder |
+| `LOGIN_EMAIL_DOMAIN` | `usuarios.taskmetrics.local` | Dominio del correo interno de cada cuenta. No lo cambies con cuentas ya creadas: dejarían de poder entrar |
+| `METRICS_PRECISION` | `4` | Decimales de los porcentajes |
+| `LOCAL_ADMIN_USERNAME` / `LOCAL_ADMIN_PASSWORD` | `admin` / `admin123` | Admin inicial del modo local |
+
+Recomendado: en Supabase → **Authentication → Sign In / Providers** desactiva *Allow new users to sign up* (las cuentas las crea el admin).
 
 ## 🧪 Pruebas
 

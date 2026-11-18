@@ -25,9 +25,6 @@ if __name__ == "__main__":
         print(" * Base de Datos: Supabase (Cloud PostgreSQL)")
     else:
         print(" * Base de Datos: modo local SQLite (solo desarrollo)")
-        missing = Config.missing_supabase_settings()
-        if missing:
-            print(f" ! SUPABASE_URL está definida pero falta: {', '.join(missing)}. No se usará Supabase.")
     print("=" * 70)
     print("Presiona CTRL+C para detener el servidor.\n")
 

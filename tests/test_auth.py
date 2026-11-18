@@ -1,9 +1,12 @@
 import unittest
+from unittest import mock
 from fastapi.testclient import TestClient
 
 from src.database.sqlite import SQLiteMetricsRepository
 from src.database.supabase import SupabaseMetricsRepository
+from src.core.config import Config
 from src.models.schemas import TaskItem
+from src.services.auth_service import SupabaseAuthService
 from src.web.app import create_app
 
 ADMIN = {"username": "admin", "password": "admin123"}
@@ -97,6 +100,13 @@ class TestAuthAndAreas(unittest.TestCase):
                 "role": "lider", "area": area
             }, headers=admin_headers)
             self.assertEqual(res.status_code, 400, res.text)
+
+    def test_half_configured_supabase_refuses_to_start(self):
+        with mock.patch.object(Config, "SUPABASE_URL", "https://abc.supabase.co"), \
+                mock.patch.object(Config, "SUPABASE_KEY", "llave-publica"):
+            with self.assertRaises(RuntimeError) as raised:
+                SupabaseAuthService()
+        self.assertIn("SUPABASE_SERVICE_ROLE_KEY", str(raised.exception))
 
     def test_username_rules(self):
         admin_headers, _ = self.login(**ADMIN)
