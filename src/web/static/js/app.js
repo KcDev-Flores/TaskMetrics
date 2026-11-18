@@ -14,7 +14,22 @@ let currentSortKey = "percentage_desc";
 // Control de Sesión y Supabase Auth
 // -----------------------------------------------------------------------------
 let currentUser = null;
-let authMode = "login"; // 'login' o 'register'
+let availableAreas = [];   // áreas que el usuario puede consultar
+let assignableAreas = [];  // áreas que el admin puede asignar a un líder
+let currentArea = "";      // área consultada (el admin la elige; un líder solo tiene la suya)
+let refreshPromise = null;
+
+const AREA_SCOPED_ENDPOINT = /^\/api\/(metrics|sprints|programmers|export)(\/|\?|$)/;
+
+function areaLabel(area) {
+  if (!area) return "";
+  return area.charAt(0).toUpperCase() + area.slice(1);
+}
+
+function withArea(url) {
+  if (currentUser?.role !== "admin" || !currentArea || !AREA_SCOPED_ENDPOINT.test(url)) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}area=${encodeURIComponent(currentArea)}`;
+}
 
 function getStoredToken() {
   return localStorage.getItem("tm_access_token") || "";
@@ -50,21 +65,56 @@ function escapeHtml(str) {
     .replace(/'/g, "&#039;");
 }
 
-async function authFetch(url, options = {}) {
-  const token = getStoredToken();
-  const headers = { ...(options.headers || {}) };
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-  options.headers = headers;
+function clearSession() {
+  setStoredToken("");
+  setStoredRefreshToken("");
+  currentUser = null;
+  currentMetrics = null;
+  availableAreas = [];
+  currentArea = "";
+}
 
-  const res = await fetch(url, options);
+// Los tokens de acceso caducan (1 hora en Supabase): se renuevan con el refresh token
+async function tryRefreshSession() {
+  const refreshToken = getStoredRefreshToken();
+  if (!refreshToken) return false;
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      try {
+        const res = await fetch("/api/auth/refresh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: refreshToken })
+        });
+        if (!res.ok) return false;
+        const data = await res.json();
+        setStoredToken(data.access_token);
+        if (data.refresh_token) setStoredRefreshToken(data.refresh_token);
+        currentUser = data.user;
+        return true;
+      } catch (e) {
+        return false;
+      } finally {
+        refreshPromise = null;
+      }
+    })();
+  }
+  return refreshPromise;
+}
+
+async function authFetch(url, options = {}) {
+  const send = () => fetch(withArea(url), {
+    ...options,
+    headers: { ...(options.headers || {}), Authorization: `Bearer ${getStoredToken()}` }
+  });
+
+  let res = await send();
+  if (res.status === 401 && await tryRefreshSession()) {
+    res = await send();
+  }
 
   if (res.status === 401) {
-    // Sesión expirada o no autorizada
-    setStoredToken("");
-    setStoredRefreshToken("");
-    currentUser = null;
+    clearSession();
     updateAuthUI();
     showToast("Tu sesión ha expirado o no está autorizada. Por favor inicia sesión.", "error");
     throw new Error("Sesión no autorizada o expirada.");
@@ -74,31 +124,66 @@ async function authFetch(url, options = {}) {
 }
 
 async function checkAuthStatus() {
-  const token = getStoredToken();
-  if (!token) {
+  if (!getStoredToken()) {
     updateAuthUI();
     return false;
   }
   try {
-    const res = await fetch("/api/auth/me", {
-      headers: { "Authorization": `Bearer ${token}` }
+    let res = await fetch("/api/auth/me", {
+      headers: { "Authorization": `Bearer ${getStoredToken()}` }
     });
+    if (res.status === 401 && await tryRefreshSession()) {
+      res = await fetch("/api/auth/me", {
+        headers: { "Authorization": `Bearer ${getStoredToken()}` }
+      });
+    }
     if (res.ok) {
-      const data = await res.json();
-      currentUser = data.user;
+      currentUser = (await res.json()).user;
+      await loadAreas();
       updateAuthUI();
       return true;
-    } else {
-      setStoredToken("");
-      setStoredRefreshToken("");
-      currentUser = null;
-      updateAuthUI();
-      return false;
     }
+    if (res.status === 401) clearSession();
+    updateAuthUI();
+    return false;
   } catch (e) {
     updateAuthUI();
     return false;
   }
+}
+
+async function loadAreas() {
+  const res = await authFetch("/api/areas");
+  const data = res.ok ? await res.json() : { areas: [], assignable: [] };
+  availableAreas = data.areas || [];
+  assignableAreas = data.assignable || [];
+
+  const stored = localStorage.getItem("tm_admin_area") || "";
+  currentArea = availableAreas.includes(stored) ? stored : (availableAreas[0] || "");
+
+  const selector = document.getElementById("area-selector");
+  if (selector) {
+    selector.innerHTML = availableAreas
+      .map(a => `<option value="${escapeHtml(a)}">${escapeHtml(areaLabel(a))}</option>`)
+      .join("");
+    selector.value = currentArea;
+  }
+  ["admin-user-area", "edit-user-area"].forEach(id => {
+    const select = document.getElementById(id);
+    if (select) {
+      select.innerHTML = assignableAreas
+        .map(a => `<option value="${escapeHtml(a)}">${escapeHtml(areaLabel(a))}</option>`)
+        .join("");
+    }
+  });
+}
+
+function onAreaChange() {
+  currentArea = document.getElementById("area-selector")?.value || "";
+  localStorage.setItem("tm_admin_area", currentArea);
+  const upTo = document.getElementById("filter-up-to");
+  if (upTo) upTo.value = "";
+  loadDashboard();
 }
 
 function updateAuthUI() {
@@ -108,6 +193,11 @@ function updateAuthUI() {
   const roleBadge = document.getElementById("user-role-badge");
   const nameDisplay = document.getElementById("user-name-display");
   const tabUsuarios = document.getElementById("tab-btn-usuarios");
+  const areaSelector = document.getElementById("area-selector-wrapper");
+
+  if (areaSelector) {
+    areaSelector.classList.toggle("hidden", currentUser?.role !== "admin");
+  }
 
   if (currentUser) {
     if (loginScreen) loginScreen.classList.add("hidden");
@@ -120,16 +210,16 @@ function updateAuthUI() {
       userBadge.classList.add("flex");
     }
     if (nameDisplay) {
-      const displayName = currentUser.name || currentUser.email.split("@")[0];
+      const displayName = currentUser.name || currentUser.username;
       nameDisplay.textContent = displayName;
-      nameDisplay.title = `${displayName} (${currentUser.email})`;
+      nameDisplay.title = `${displayName} (${currentUser.username})`;
     }
     if (roleBadge) {
       if (currentUser.role === "admin") {
         roleBadge.textContent = "👑 Administrador";
         roleBadge.className = "px-1.5 sm:px-2 py-0.5 rounded-md font-semibold text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30";
       } else {
-        roleBadge.textContent = "⭐ Líder";
+        roleBadge.textContent = `⭐ Líder · ${areaLabel(currentUser.area) || "sin área"}`;
         roleBadge.className = "px-1.5 sm:px-2 py-0.5 rounded-md font-semibold text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30";
       }
     }
@@ -160,18 +250,18 @@ function updateAuthUI() {
 }
 
 async function submitCleanLogin() {
-  const emailInput = document.getElementById("login-input-email");
+  const usernameInput = document.getElementById("login-input-username");
   const passwordInput = document.getElementById("login-input-password");
   const errorAlert = document.getElementById("login-error-alert");
   const errorText = document.getElementById("login-error-text");
   const submitBtn = document.getElementById("btn-login-submit");
   const submitText = document.getElementById("btn-login-text");
 
-  const email = emailInput?.value.trim();
+  const username = usernameInput?.value.trim();
   const password = passwordInput?.value;
 
-  if (!email || !password) {
-    if (errorText) errorText.textContent = "Por favor ingresa tu correo y contraseña.";
+  if (!username || !password) {
+    if (errorText) errorText.textContent = "Por favor ingresa tu usuario y contraseña.";
     errorAlert?.classList.remove("hidden");
     return;
   }
@@ -184,12 +274,12 @@ async function submitCleanLogin() {
     const res = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password })
+      body: JSON.stringify({ username, password })
     });
 
     const data = await res.json();
     if (!res.ok) {
-      throw new Error(data.detail || "Error en el inicio de sesión.");
+      throw new Error(typeof data.detail === "string" ? data.detail : "Error en el inicio de sesión.");
     }
 
     setStoredToken(data.access_token);
@@ -198,8 +288,9 @@ async function submitCleanLogin() {
 
     if (passwordInput) passwordInput.value = "";
 
+    await loadAreas();
     updateAuthUI();
-    showToast(`¡Bienvenido/a, ${currentUser.name || currentUser.email}!`);
+    showToast(`¡Bienvenido/a, ${currentUser.name || currentUser.username}!`);
     loadDashboard();
   } catch (err) {
     if (errorText) errorText.textContent = err.message || "Error al iniciar sesión.";
@@ -210,135 +301,13 @@ async function submitCleanLogin() {
   }
 }
 
-function openAuthModal(mode = "login") {
-  authMode = mode;
-  switchAuthMode(mode);
-  openModal("modal-auth");
-}
-
-function switchAuthMode(mode) {
-  authMode = mode;
-  const isLogin = mode === "login";
-  const tabLogin = document.getElementById("tab-auth-login");
-  const tabRegister = document.getElementById("tab-auth-register");
-  const confirmField = document.getElementById("auth-field-confirm-password");
-  const submitText = document.getElementById("btn-auth-text");
-  const toggleCaption = document.getElementById("auth-toggle-caption");
-  const errorAlert = document.getElementById("auth-error-alert");
-
-  if (errorAlert) errorAlert.classList.add("hidden");
-
-  if (isLogin) {
-    if (tabLogin) tabLogin.className = "flex-1 py-1.5 text-xs font-semibold rounded-lg transition text-white bg-slate-800 shadow-sm";
-    if (tabRegister) tabRegister.className = "flex-1 py-1.5 text-xs font-semibold rounded-lg transition text-slate-400 hover:text-slate-200";
-    confirmField?.classList.add("hidden");
-    if (submitText) submitText.textContent = "Iniciar Sesión";
-    if (toggleCaption) {
-      toggleCaption.innerHTML = '¿No tienes una cuenta aún? <button type="button" onclick="switchAuthMode(\'register\')" class="text-emerald-400 hover:underline font-medium">Regístrate</button>';
-    }
-  } else {
-    if (tabRegister) tabRegister.className = "flex-1 py-1.5 text-xs font-semibold rounded-lg transition text-white bg-slate-800 shadow-sm";
-    if (tabLogin) tabLogin.className = "flex-1 py-1.5 text-xs font-semibold rounded-lg transition text-slate-400 hover:text-slate-200";
-    confirmField?.classList.remove("hidden");
-    if (submitText) submitText.textContent = "Crear Cuenta en Supabase";
-    if (toggleCaption) {
-      toggleCaption.innerHTML = '¿Ya tienes una cuenta? <button type="button" onclick="switchAuthMode(\'login\')" class="text-emerald-400 hover:underline font-medium">Inicia sesión</button>';
-    }
-  }
-}
-
-async function submitAuth() {
-  const email = document.getElementById("auth-input-email")?.value.trim();
-  const password = document.getElementById("auth-input-password")?.value;
-  const confirmPassword = document.getElementById("auth-input-confirm-password")?.value;
-  const errorAlert = document.getElementById("auth-error-alert");
-  const submitBtn = document.getElementById("btn-auth-submit");
-
-  if (!email || !password) {
-    if (errorAlert) {
-      errorAlert.textContent = "Por favor ingresa correo y contraseña.";
-      errorAlert.classList.remove("hidden");
-    }
-    return;
-  }
-
-  if (authMode === "register" && password !== confirmPassword) {
-    if (errorAlert) {
-      errorAlert.textContent = "Las contraseñas no coinciden.";
-      errorAlert.classList.remove("hidden");
-    }
-    return;
-  }
-
-  try {
-    if (submitBtn) submitBtn.disabled = true;
-    if (errorAlert) errorAlert.classList.add("hidden");
-
-    const endpoint = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password })
-    });
-
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.detail || "Error en la autenticación");
-    }
-
-    if (authMode === "register") {
-      showToast("¡Cuenta registrada con éxito!");
-      if (data.session && data.session.access_token) {
-        setStoredToken(data.session.access_token);
-        if (data.session.refresh_token) setStoredRefreshToken(data.session.refresh_token);
-        currentUser = data.user;
-      } else {
-        // Intentar login automático
-        const loginRes = await fetch("/api/auth/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, password })
-        });
-        const loginData = await loginRes.json();
-        if (loginRes.ok) {
-          setStoredToken(loginData.access_token);
-          if (loginData.refresh_token) setStoredRefreshToken(loginData.refresh_token);
-          currentUser = loginData.user;
-        } else {
-          showToast("Cuenta creada. Por favor inicia sesión.", "success");
-          switchAuthMode("login");
-          return;
-        }
-      }
-    } else {
-      setStoredToken(data.access_token);
-      if (data.refresh_token) setStoredRefreshToken(data.refresh_token);
-      currentUser = data.user;
-      showToast(`¡Sesión iniciada como ${currentUser.email}!`);
-    }
-
-    updateAuthUI();
-    closeModal("modal-auth");
-    loadDashboard();
-  } catch (err) {
-    if (errorAlert) {
-      errorAlert.textContent = err.message;
-      errorAlert.classList.remove("hidden");
-    }
-  } finally {
-    if (submitBtn) submitBtn.disabled = false;
-  }
-}
-
 async function logout() {
   try {
     await authFetch("/api/auth/logout", { method: "POST" });
   } catch (e) {
     // Ignorar si el token ya expiró
   }
-  setStoredToken("");
-  setStoredRefreshToken("");
-  currentUser = null;
+  clearSession();
   updateAuthUI();
   showToast("Sesión cerrada correctamente.");
 }
@@ -405,6 +374,8 @@ function applyActiveTabUI() {
       }
     }
   });
+  // Reasignar className arriba borra "hidden": la pestaña Usuarios es solo del admin
+  document.getElementById("tab-btn-usuarios")?.classList.toggle("hidden", currentUser?.role !== "admin");
 }
 
 // -----------------------------------------------------------------------------
@@ -470,7 +441,10 @@ async function loadDashboard() {
       authFetch("/api/programmers")
     ]);
 
-    if (!resMetrics.ok) throw new Error("Error al obtener métricas");
+    if (!resMetrics.ok) {
+      const err = await resMetrics.json().catch(() => ({}));
+      throw new Error(err.detail || "Error al obtener métricas");
+    }
     currentMetrics = await resMetrics.json();
     currentSprints = resSprints.ok ? await resSprints.json() : [];
     currentProgrammers = resProgs.ok ? await resProgs.json() : [];
@@ -960,7 +934,7 @@ async function openDevHistoryModal(name) {
               </span>
               <span class="text-xs font-semibold text-white">${s.sprint_name}</span>
             </div>
-            <span class="text-[11px] text-slate-400">${s.tasks.length} tarea(s) realizada(s)</span>
+            <span class="text-[11px] text-slate-400">${s.tasks.filter(t => t.completed).length} de ${s.tasks.length} tarea(s) realizada(s)</span>
           </div>
           <div class="space-y-1.5">
             ${tasksListHtml}
@@ -1388,7 +1362,7 @@ async function loadUsersList() {
   try {
     tbody.innerHTML = `
       <tr>
-        <td colspan="5" class="py-8 text-center text-slate-500">
+        <td colspan="6" class="py-8 text-center text-slate-500">
           <div class="flex items-center justify-center gap-2">
             <span class="animate-spin">⏳</span>
             <span>Cargando usuarios...</span>
@@ -1403,14 +1377,13 @@ async function loadUsersList() {
       throw new Error(err.detail || "No se pudieron obtener los usuarios.");
     }
 
-    const data = await res.json();
-    currentAdminUsers = data.users || [];
+    currentAdminUsers = await res.json();
     renderUsersTable();
   } catch (err) {
     if (tbody) {
       tbody.innerHTML = `
         <tr>
-          <td colspan="5" class="py-6 text-center text-rose-400">
+          <td colspan="6" class="py-6 text-center text-rose-400">
             Error al cargar usuarios: ${escapeHtml(err.message)}
           </td>
         </tr>
@@ -1427,7 +1400,7 @@ function renderUsersTable() {
   if (currentAdminUsers.length === 0) {
     tbody.innerHTML = `
       <tr>
-        <td colspan="5" class="py-8 text-center text-slate-500">
+        <td colspan="6" class="py-8 text-center text-slate-500">
           No hay usuarios registrados en el sistema.
         </td>
       </tr>
@@ -1446,7 +1419,10 @@ function renderUsersTable() {
       : '<span class="text-rose-400 flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span> Inactivo</span>';
 
     const escapedName = escapeHtml(u.name || "Sin nombre");
-    const escapedEmail = escapeHtml(u.email);
+    const escapedUsername = escapeHtml(u.username);
+    const areaCell = u.role === "admin"
+      ? '<span class="text-slate-500">Todas</span>'
+      : (u.area ? escapeHtml(areaLabel(u.area)) : '<span class="text-rose-400">Sin área</span>');
     const userSafeId = escapeHtml(u.id);
 
     return `
@@ -1460,8 +1436,9 @@ function renderUsersTable() {
             ${isMe ? '<span class="text-[10px] text-emerald-400 font-semibold">(Tú)</span>' : ''}
           </div>
         </td>
-        <td class="py-3.5 px-4 text-slate-300">${escapedEmail}</td>
+        <td class="py-3.5 px-4 text-slate-300 font-mono">${escapedUsername}</td>
         <td class="py-3.5 px-4">${roleBadge}</td>
+        <td class="py-3.5 px-4 text-slate-300">${areaCell}</td>
         <td class="py-3.5 px-4">${statusBadge}</td>
         <td class="py-3.5 px-4 text-right">
           <div class="inline-flex items-center gap-1.5">
@@ -1471,7 +1448,7 @@ function renderUsersTable() {
               <span>✏️</span>
               <span class="hidden sm:inline">Editar</span>
             </button>
-            <button onclick="deleteUserAdmin('${userSafeId}', '${escapedName}')"
+            <button onclick="deleteUserAdmin('${userSafeId}')"
                     ${isMe ? 'disabled title="No puedes eliminar tu propia cuenta" class="px-2.5 py-1.5 bg-slate-900 text-slate-600 rounded-lg text-xs border border-slate-800 cursor-not-allowed"' : 'class="px-2.5 py-1.5 bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 rounded-lg text-xs font-medium border border-rose-800/60 transition" title="Eliminar usuario"'} >
               <span>🗑️</span>
             </button>
@@ -1480,6 +1457,11 @@ function renderUsersTable() {
       </tr>
     `;
   }).join("");
+}
+
+function toggleAreaField(roleSelectId, areaFieldId) {
+  const isLeader = document.getElementById(roleSelectId)?.value === "lider";
+  document.getElementById(areaFieldId)?.classList.toggle("hidden", !isLeader);
 }
 
 function onEditUserClick(userId) {
@@ -1496,18 +1478,20 @@ function openModalCreateUser() {
     errBox.classList.add("hidden");
     errBox.textContent = "";
   }
+  toggleAreaField("admin-user-role", "admin-user-area-field");
   openModal("modal-admin-create-user");
 }
 
 async function submitAdminCreateUser() {
   const name = document.getElementById("admin-user-name")?.value.trim();
-  const email = document.getElementById("admin-user-email")?.value.trim();
+  const username = document.getElementById("admin-user-username")?.value.trim().toLowerCase();
   const password = document.getElementById("admin-user-password")?.value;
   const role = document.getElementById("admin-user-role")?.value || "lider";
+  const area = role === "lider" ? document.getElementById("admin-user-area")?.value : null;
   const errBox = document.getElementById("admin-create-user-error");
   const submitBtn = document.getElementById("btn-submit-create-user");
 
-  if (!name || !email || !password) {
+  if (!name || !username || !password) {
     if (errBox) {
       errBox.textContent = "Por favor completa todos los campos requeridos.";
       errBox.classList.remove("hidden");
@@ -1522,16 +1506,18 @@ async function submitAdminCreateUser() {
     const res = await authFetch("/api/admin/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, name, role })
+      body: JSON.stringify({ username, password, name, role, area })
     });
 
     const data = await res.json();
     if (!res.ok) {
-      throw new Error(data.detail || "No se pudo crear el usuario.");
+      throw new Error(typeof data.detail === "string" ? data.detail : "No se pudo crear el usuario. Revisa los datos.");
     }
 
     closeModal("modal-admin-create-user");
-    showToast(`¡Usuario ${data.name || data.email} creado con éxito con rol de ${data.role === 'admin' ? 'Administrador' : 'Líder'}!`);
+    const created = data.user || {};
+    const roleText = created.role === "admin" ? "Administrador" : `Líder de ${areaLabel(created.area)}`;
+    showToast(`¡Usuario ${created.username} creado como ${roleText}!`);
     loadUsersList();
   } catch (err) {
     if (errBox) {
@@ -1553,8 +1539,11 @@ function openModalEditUser(user) {
 
   document.getElementById("edit-user-id").value = user.id;
   document.getElementById("edit-user-name").value = user.name || "";
-  document.getElementById("edit-user-email").value = user.email || "";
+  document.getElementById("edit-user-username").value = user.username || "";
   document.getElementById("edit-user-role").value = user.role || "lider";
+  const areaSelect = document.getElementById("edit-user-area");
+  if (areaSelect && user.area) areaSelect.value = user.area;
+  toggleAreaField("edit-user-role", "edit-user-area-field");
   document.getElementById("edit-user-active").value = user.active ? "true" : "false";
   document.getElementById("edit-user-password").value = "";
 
@@ -1579,8 +1568,18 @@ async function submitAdminEditUser() {
   }
 
   const payload = { name, role, active };
-  if (password && password.trim().length >= 6) {
-    payload.password = password.trim();
+  if (role === "lider") {
+    payload.area = document.getElementById("edit-user-area")?.value;
+  }
+  if (password) {
+    if (password.length < 6) {
+      if (errBox) {
+        errBox.textContent = "La contraseña debe tener mínimo 6 caracteres.";
+        errBox.classList.remove("hidden");
+      }
+      return;
+    }
+    payload.password = password;
   }
 
   try {
@@ -1603,8 +1602,7 @@ async function submitAdminEditUser() {
 
     // Si el usuario editado es el actual, refrescar sesión local
     if (currentUser && currentUser.id === userId) {
-      currentUser.name = data.name;
-      currentUser.role = data.role;
+      currentUser.name = name;
       updateAuthUI();
     }
 
@@ -1619,7 +1617,8 @@ async function submitAdminEditUser() {
   }
 }
 
-async function deleteUserAdmin(userId, userName) {
+async function deleteUserAdmin(userId) {
+  const userName = currentAdminUsers.find(u => u.id === userId)?.name || "este usuario";
   if (!confirm(`¿Estás seguro de eliminar permanentemente al usuario "${userName}"? Esta acción no se puede deshacer.`)) {
     return;
   }

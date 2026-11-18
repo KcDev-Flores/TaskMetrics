@@ -1,143 +1,243 @@
 import unittest
+from unittest import mock
 from fastapi.testclient import TestClient
 
+from src.database.sqlite import SQLiteMetricsRepository
+from src.database.supabase import SupabaseMetricsRepository
+from src.core.config import Config
+from src.models.schemas import TaskItem
+from src.services.auth_service import SupabaseAuthService
 from src.web.app import create_app
 
+ADMIN = {"username": "admin", "password": "admin123"}
 
-class TestSupabaseAuthAndProtectedRoutes(unittest.TestCase):
+
+class TestAuthAndAreas(unittest.TestCase):
     def setUp(self):
-        self.app = create_app()
-        self.client = TestClient(self.app)
+        self.client = TestClient(create_app())
+
+    def login(self, username, password):
+        res = self.client.post("/api/auth/login", json={"username": username, "password": password})
+        self.assertEqual(res.status_code, 200, res.text)
+        return {"Authorization": f"Bearer {res.json()['access_token']}"}, res.json()
+
+    def ensure_leader(self, username, area, password="password123"):
+        admin_headers, _ = self.login(**ADMIN)
+        res = self.client.post("/api/admin/users", json={
+            "username": username, "password": password, "name": username.title(), "role": "lider", "area": area
+        }, headers=admin_headers)
+        self.assertIn(res.status_code, [200, 400], res.text)
+        return self.login(username, password)[0]
 
     def test_unauthenticated_request_rejected(self):
-        # Intentar acceder a rutas protegidas sin token debe devolver 401
         res = self.client.get("/api/metrics")
         self.assertEqual(res.status_code, 401)
         self.assertIn("No autorizado", res.json().get("detail", ""))
 
-        res = self.client.get("/api/sprints")
-        self.assertEqual(res.status_code, 401)
+        self.assertEqual(self.client.get("/api/sprints").status_code, 401)
+        self.assertEqual(self.client.get("/api/programmers").status_code, 401)
+        self.assertEqual(self.client.get("/api/areas").status_code, 401)
+        self.assertEqual(self.client.post("/api/programmers", json={"name": "Hacker"}).status_code, 401)
 
-        res = self.client.get("/api/programmers")
-        self.assertEqual(res.status_code, 401)
+    def test_invalid_or_forged_token_rejected(self):
+        for token in ("token-falso-invalido", "dev-token-admin", "dev-token-admin@taskmetrics.com"):
+            headers = {"Authorization": f"Bearer {token}"}
+            self.assertEqual(self.client.get("/api/metrics", headers=headers).status_code, 401)
+            self.assertEqual(self.client.get("/api/admin/users", headers=headers).status_code, 401)
 
-        res = self.client.post("/api/programmers", json={"name": "Hacker"})
-        self.assertEqual(res.status_code, 401)
+    def test_public_registration_is_closed(self):
+        res = self.client.post("/api/auth/register", json={"username": "intruso", "password": "123456"})
+        self.assertIn(res.status_code, [404, 405])
+        login = self.client.post("/api/auth/login", json={"username": "intruso", "password": "123456"})
+        self.assertEqual(login.status_code, 401)
 
-    def test_invalid_token_rejected(self):
-        # Token malformado o falso debe devolver 401
-        headers = {"Authorization": "Bearer token-falso-invalido"}
-        res = self.client.get("/api/metrics", headers=headers)
+    def test_wrong_password_rejected(self):
+        res = self.client.post("/api/auth/login", json={"username": ADMIN["username"], "password": "incorrecta"})
         self.assertEqual(res.status_code, 401)
 
     def test_auth_status_endpoint(self):
         res = self.client.get("/api/auth/status")
         self.assertEqual(res.status_code, 200)
-        self.assertIn("supabase_configured", res.json())
+        self.assertFalse(res.json()["supabase_configured"])
 
-    def test_auth_flow_and_protected_access(self):
-        # 1. Registro de usuario
-        test_email = "tester_auth@taskmetrics.com"
-        test_pwd = "securePassword123"
+    def test_session_flow(self):
+        headers = self.ensure_leader("lider.sesion", "builder")
+        _, session = self.login("lider.sesion", "password123")
 
-        reg_res = self.client.post("/api/auth/register", json={
-            "email": test_email,
-            "password": test_pwd
-        })
-        self.assertIn(reg_res.status_code, [200, 400])
+        me = self.client.get("/api/auth/me", headers=headers)
+        self.assertEqual(me.status_code, 200)
+        self.assertEqual(me.json()["user"]["area"], "builder")
+        self.assertNotIn("token", me.json()["user"])
 
-        # 2. Inicio de sesión
-        login_res = self.client.post("/api/auth/login", json={
-            "email": test_email,
-            "password": test_pwd
-        })
-        self.assertEqual(login_res.status_code, 200)
-        login_data = login_res.json()
-        self.assertIn("access_token", login_data)
-        token = login_data["access_token"]
-        refresh_token = login_data.get("refresh_token")
+        refreshed = self.client.post("/api/auth/refresh", json={"refresh_token": session["refresh_token"]})
+        self.assertEqual(refreshed.status_code, 200)
+        self.assertIn("access_token", refreshed.json())
 
-        headers = {"Authorization": f"Bearer {token}"}
+        self.assertEqual(self.client.post("/api/auth/logout", headers=headers).status_code, 200)
+        self.assertEqual(self.client.get("/api/auth/me", headers=headers).status_code, 401)
 
-        # 3. Verificar /api/auth/me
-        me_res = self.client.get("/api/auth/me", headers=headers)
-        self.assertEqual(me_res.status_code, 200)
-        self.assertEqual(me_res.json()["user"]["email"], test_email)
+    def test_only_admin_manages_users(self):
+        admin_headers, _ = self.login(**ADMIN)
+        self.assertEqual(self.client.get("/api/admin/users", headers=admin_headers).status_code, 200)
 
-        # 4. Acceder a rutas protegidas con token exitosamente
-        metrics_res = self.client.get("/api/metrics", headers=headers)
-        self.assertEqual(metrics_res.status_code, 200)
+        leader_headers = self.ensure_leader("lider.capo", "blockbench")
+        self.assertEqual(self.client.get("/api/metrics", headers=leader_headers).status_code, 200)
 
-        prog_res = self.client.get("/api/programmers", headers=headers)
-        self.assertEqual(prog_res.status_code, 200)
+        attempt = self.client.get("/api/admin/users", headers=leader_headers)
+        self.assertEqual(attempt.status_code, 403)
+        self.assertIn("Acceso restringido", attempt.json()["detail"])
 
-        # 5. Operaciones de escritura protegidas
-        add_prog_res = self.client.post("/api/programmers", json={"name": "DevAuthUser"}, headers=headers)
-        self.assertEqual(add_prog_res.status_code, 200)
-
-        # 6. Refrescar token
-        if refresh_token:
-            refresh_res = self.client.post("/api/auth/refresh", json={"refresh_token": refresh_token})
-            self.assertEqual(refresh_res.status_code, 200)
-            self.assertIn("access_token", refresh_res.json())
-
-        # 7. Logout
-        logout_res = self.client.post("/api/auth/logout", headers=headers)
-        self.assertEqual(logout_res.status_code, 200)
-
-    def test_rbac_admin_vs_lider(self):
-        # 1. Login como Admin
-        admin_login = self.client.post("/api/auth/login", json={
-            "email": "admin@taskmetrics.com",
-            "password": "admin123"
-        })
-        self.assertEqual(admin_login.status_code, 200)
-        admin_token = admin_login.json()["access_token"]
-        admin_headers = {"Authorization": f"Bearer {admin_token}"}
-
-        # 2. Admin puede listar usuarios
-        res_users = self.client.get("/api/admin/users", headers=admin_headers)
-        self.assertEqual(res_users.status_code, 200)
-
-        # 3. Admin crea un nuevo Líder
-        leader_email = "lider_capo@taskmetrics.com"
-        create_user_res = self.client.post("/api/admin/users", json={
-            "email": leader_email,
-            "password": "password123",
-            "name": "Capo Líder",
-            "role": "lider"
-        }, headers=admin_headers)
-        self.assertEqual(create_user_res.status_code, 200)
-
-        # 4. Login como Líder
-        leader_login = self.client.post("/api/auth/login", json={
-            "email": leader_email,
-            "password": "password123"
-        })
-        self.assertEqual(leader_login.status_code, 200)
-        leader_token = leader_login.json()["access_token"]
-        leader_headers = {"Authorization": f"Bearer {leader_token}"}
-
-        # 5. Líder SÍ puede ver métricas y crear tareas
-        leader_metrics = self.client.get("/api/metrics", headers=leader_headers)
-        self.assertEqual(leader_metrics.status_code, 200)
-
-        # 6. Líder NO puede acceder al módulo de administración de usuarios (debe dar 403 Forbidden)
-        leader_admin_attempt = self.client.get("/api/admin/users", headers=leader_headers)
-        self.assertEqual(leader_admin_attempt.status_code, 403)
-        self.assertIn("Acceso restringido", leader_admin_attempt.json()["detail"])
-
-        # Tampoco puede crear usuarios
-        leader_create_attempt = self.client.post("/api/admin/users", json={
-            "email": "hacker@test.com",
-            "password": "password123",
-            "name": "Hacker",
-            "role": "admin"
+        create_attempt = self.client.post("/api/admin/users", json={
+            "username": "hacker", "password": "password123", "name": "Hacker", "role": "admin"
         }, headers=leader_headers)
-        self.assertEqual(leader_create_attempt.status_code, 403)
+        self.assertEqual(create_attempt.status_code, 403)
 
+    def test_leader_requires_valid_area(self):
+        admin_headers, _ = self.login(**ADMIN)
+        for area in (None, "inexistente"):
+            res = self.client.post("/api/admin/users", json={
+                "username": "sin.area", "password": "password123", "name": "Sin Área",
+                "role": "lider", "area": area
+            }, headers=admin_headers)
+            self.assertEqual(res.status_code, 400, res.text)
+
+    def test_half_configured_supabase_refuses_to_start(self):
+        with mock.patch.object(Config, "SUPABASE_URL", "https://abc.supabase.co"), \
+                mock.patch.object(Config, "SUPABASE_KEY", "llave-publica"):
+            with self.assertRaises(RuntimeError) as raised:
+                SupabaseAuthService()
+        self.assertIn("SUPABASE_SERVICE_ROLE_KEY", str(raised.exception))
+
+    def test_username_rules(self):
+        admin_headers, _ = self.login(**ADMIN)
+        base = {"password": "password123", "name": "X", "role": "lider", "area": "builder"}
+        for bad in ("ab", "con espacio", "correo@dominio.com", ".empieza.mal", "x" * 33):
+            res = self.client.post("/api/admin/users", json={**base, "username": bad}, headers=admin_headers)
+            self.assertEqual(res.status_code, 400, bad)
+        # Se guarda en minúsculas y se puede entrar escribiéndolo con mayúsculas
+        res = self.client.post("/api/admin/users", json={**base, "username": "Lider.Mayus_1-a"}, headers=admin_headers)
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(res.json()["user"]["username"], "lider.mayus_1-a")
+        self.login("LIDER.Mayus_1-a", "password123")
+
+    def test_duplicate_username_rejected(self):
+        admin_headers, _ = self.login(**ADMIN)
+        payload = {"username": "repetido", "password": "password123", "name": "Uno",
+                   "role": "lider", "area": "doblaje"}
+        self.client.post("/api/admin/users", json=payload, headers=admin_headers)
+        again = self.client.post("/api/admin/users", json=payload, headers=admin_headers)
+        self.assertEqual(again.status_code, 400)
+
+    def test_leaders_only_see_their_own_area(self):
+        builder = self.ensure_leader("lider.builder", "builder")
+        doblaje = self.ensure_leader("lider.doblaje", "doblaje")
+
+        sprint = {"sprint_number": 1, "name": "Sprint Builder", "status": "completed", "tasks": [
+            {"title": "Spawn", "status": "completed", "assigned_programmers": ["Solo Builder"]}
+        ]}
+        self.assertEqual(self.client.post("/api/sprints", json=sprint, headers=builder).status_code, 200)
+
+        # Otra área no ve nada, ni pidiendo el área ajena por parámetro
+        for url in ("/api/programmers", "/api/programmers?area=builder"):
+            names = [p["name"] for p in self.client.get(url, headers=doblaje).json()]
+            self.assertNotIn("Solo Builder", names)
+        self.assertEqual(self.client.get("/api/sprints/1?area=builder", headers=doblaje).status_code, 404)
+        self.assertEqual(self.client.get("/api/metrics?area=builder", headers=doblaje).json()["area"], "doblaje")
+        self.assertEqual(self.client.delete("/api/sprints/1?area=builder", headers=doblaje).status_code, 404)
+
+        # El mismo número de sprint y el mismo nombre pueden existir en otra área
+        sprint_doblaje = {"sprint_number": 1, "name": "Sprint Doblaje", "status": "completed", "tasks": [
+            {"title": "Voces", "status": "completed", "assigned_programmers": ["Solo Builder", "Voz"]}
+        ]}
+        self.assertEqual(self.client.post("/api/sprints", json=sprint_doblaje, headers=doblaje).status_code, 200)
+        builder_metrics = self.client.get("/api/metrics", headers=builder).json()
+        self.assertEqual(builder_metrics["programmers"], ["Solo Builder"])
+        self.assertEqual(builder_metrics["sprint_names"]["1"], "Sprint Builder")
+        self.assertEqual(builder_metrics["matrix"][0]["percentage"], 100.0)
+
+        # El admin consulta cualquier área
+        admin_headers, _ = self.login(**ADMIN)
+        admin_view = self.client.get("/api/metrics?area=doblaje", headers=admin_headers).json()
+        self.assertEqual(sorted(admin_view["programmers"]), ["Solo Builder", "Voz"])
+        self.assertEqual(self.client.get("/api/metrics?area=nope", headers=admin_headers).status_code, 400)
+        areas = self.client.get("/api/areas", headers=admin_headers).json()["areas"]
+        self.assertTrue({"diseñador", "blockbench", "builder", "doblaje"} <= set(areas))
+        self.assertEqual(self.client.get("/api/areas", headers=builder).json()["areas"], ["builder"])
+
+    def test_admin_reaches_migrated_data_outside_configured_areas(self):
+        # Una base anterior a las áreas se migra al área 'general', que no está configurada
+        SQLiteMetricsRepository(area="general").save_sprint_with_tasks(
+            7, "Sprint heredado", "completed", [TaskItem("Tarea vieja", "completed", ["Veterano"])]
+        )
+        admin_headers, _ = self.login(**ADMIN)
+        self.assertIn("general", self.client.get("/api/areas", headers=admin_headers).json()["areas"])
+        metrics = self.client.get("/api/metrics?area=general", headers=admin_headers)
+        self.assertEqual(metrics.status_code, 200, metrics.text)
+        self.assertEqual(metrics.json()["programmers"], ["Veterano"])
+        export = self.client.get("/api/export?format=csv&area=general", headers=admin_headers)
+        self.assertIn("Veterano", export.text)
+
+    def test_supabase_areas_include_those_with_data(self):
+        class FakeQuery:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def select(self, *_):
+                return self
+
+            def order(self, *_):
+                return self
+
+            def range(self, start, end):
+                self.page = self.rows[start:end + 1]
+                return self
+
+            def execute(self):
+                return type("Result", (), {"data": self.page})()
+
+        class FakeClient:
+            tables = {
+                "programmers": [{"area": "general"}] * 1001 + [{"area": "builder"}],
+                "sprints": [{"area": "doblaje"}],
+            }
+
+            def table(self, name):
+                return FakeQuery(self.tables[name])
+
+        self.assertEqual(
+            SupabaseMetricsRepository.list_areas(FakeClient()), ["builder", "doblaje", "general"]
+        )
+
+    def test_admin_edits_and_deactivates_user(self):
+        admin_headers, admin_session = self.login(**ADMIN)
+        headers = self.ensure_leader("lider.editable", "builder")
+        users = self.client.get("/api/admin/users", headers=admin_headers).json()
+        target = next(u for u in users if u["username"] == "lider.editable")
+
+        res = self.client.put(f"/api/admin/users/{target['id']}", json={
+            "area": "doblaje", "password": "nuevaClave123"
+        }, headers=admin_headers)
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertEqual(self.client.get("/api/auth/me", headers=headers).json()["user"]["area"], "doblaje")
+        old = self.client.post("/api/auth/login", json={"username": target["username"], "password": "password123"})
+        self.assertEqual(old.status_code, 401)
+        self.login(target["username"], "nuevaClave123")
+
+        self.client.put(f"/api/admin/users/{target['id']}", json={"active": False}, headers=admin_headers)
+        self.assertEqual(self.client.get("/api/auth/me", headers=headers).status_code, 401)
+        blocked = self.client.post("/api/auth/login", json={"username": target["username"], "password": "nuevaClave123"})
+        self.assertEqual(blocked.status_code, 401)
+
+        # El admin no puede dejarse sin acceso a sí mismo
+        own_id = admin_session["user"]["id"]
+        for change in ({"role": "lider", "area": "builder"}, {"active": False}):
+            res = self.client.put(f"/api/admin/users/{own_id}", json=change, headers=admin_headers)
+            self.assertEqual(res.status_code, 400)
+        self.assertEqual(self.client.delete(f"/api/admin/users/{own_id}", headers=admin_headers).status_code, 400)
+
+        self.assertEqual(self.client.delete(f"/api/admin/users/{target['id']}", headers=admin_headers).status_code, 200)
+        self.assertEqual(self.client.delete(f"/api/admin/users/{target['id']}", headers=admin_headers).status_code, 404)
 
 
 if __name__ == "__main__":
     unittest.main()
-

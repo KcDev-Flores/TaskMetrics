@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TaskMetrics - Control de Sprints y Rendimiento</title>
+  <title>{{STUDIO_NAME}} · TaskMetrics</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="/static/css/styles.css">
@@ -37,8 +37,8 @@
         <div class="w-14 h-14 mx-auto rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold text-2xl shadow-inner">
           TM
         </div>
-        <h1 class="text-2xl font-bold text-white tracking-tight">TaskMetrics</h1>
-        <p class="text-xs text-slate-400">Control de Sprints, Rendimiento y Ponderación de Ingresos</p>
+        <h1 class="text-2xl font-bold text-white tracking-tight">{{STUDIO_NAME}}</h1>
+        <p class="text-xs text-slate-400">TaskMetrics · Evaluación de esfuerzo por área y sprint</p>
       </div>
 
       <!-- Alerta de Error de Login -->
@@ -50,10 +50,10 @@
       <!-- Formulario de Acceso Directo -->
       <form id="form-clean-login" onsubmit="event.preventDefault(); submitCleanLogin();" class="space-y-4">
         <div>
-          <label class="block text-xs font-medium text-slate-300 mb-1.5">Correo Electrónico</label>
-          <input type="email" id="login-input-email" required autocomplete="email"
+          <label class="block text-xs font-medium text-slate-300 mb-1.5">Usuario</label>
+          <input type="text" id="login-input-username" required autocomplete="username" autocapitalize="none" spellcheck="false"
                  class="w-full bg-slate-950 border border-slate-700/80 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
-                 placeholder="tu-correo@empresa.com">
+                 placeholder="tu.usuario">
         </div>
         <div>
           <label class="block text-xs font-medium text-slate-300 mb-1.5">Contraseña</label>
@@ -93,8 +93,8 @@
             TM
           </div>
           <div>
-            <h1 class="text-sm sm:text-base font-semibold tracking-tight text-white leading-tight">TaskMetrics</h1>
-            <p class="text-[10px] text-slate-400 hidden md:block">Gestión de Sprints y Rendimiento</p>
+            <h1 class="text-sm sm:text-base font-semibold tracking-tight text-white leading-tight">{{STUDIO_NAME}}</h1>
+            <p class="text-[10px] text-slate-400 hidden md:block">TaskMetrics · Esfuerzo por área</p>
           </div>
         </div>
 
@@ -121,6 +121,12 @@
 
         <!-- Controles de Usuario y Actualizar -->
         <div class="flex items-center gap-2 shrink-0">
+          <!-- Selector de área (solo Admin: un líder siempre ve la suya) -->
+          <label id="area-selector-wrapper" class="hidden flex items-center gap-1.5 text-[11px] text-slate-400">
+            <span class="hidden lg:inline">Área</span>
+            <select id="area-selector" onchange="onAreaChange()" title="Área que estás consultando"
+                    class="bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-2 py-1.5 text-xs focus:ring-1 focus:ring-emerald-500"></select>
+          </label>
           <button onclick="loadDashboard()" class="p-1.5 sm:p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs border border-slate-700 transition" title="Actualizar datos">
             🔄
           </button>
@@ -438,7 +444,7 @@
             <h2 class="text-lg font-bold text-white">Gestión de Usuarios y Roles</h2>
             <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">👑 Solo Administrador</span>
           </div>
-          <p class="text-xs text-slate-400 mt-1">Crea accesos para tus líderes, define permisos y administra credenciales del sistema.</p>
+          <p class="text-xs text-slate-400 mt-1">Crea accesos para tus líderes, asígnales su área y administra credenciales del sistema.</p>
         </div>
         <button onclick="openModalCreateUser()" class="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/50">
           <span>➕</span>
@@ -453,15 +459,16 @@
             <thead>
               <tr class="border-b border-slate-800 bg-slate-950/80 text-slate-400 uppercase tracking-wider font-semibold">
                 <th class="py-3.5 px-4">Nombre / Integrante</th>
-                <th class="py-3.5 px-4">Correo Electrónico</th>
+                <th class="py-3.5 px-4">Usuario</th>
                 <th class="py-3.5 px-4">Rol Asignado</th>
+                <th class="py-3.5 px-4">Área</th>
                 <th class="py-3.5 px-4">Estado</th>
                 <th class="py-3.5 px-4 text-right">Acciones</th>
               </tr>
             </thead>
             <tbody id="users-table-body" class="divide-y divide-slate-800/60 text-slate-300">
               <tr>
-                <td colspan="5" class="py-8 text-center text-slate-500">Cargando usuarios del sistema...</td>
+                <td colspan="6" class="py-8 text-center text-slate-500">Cargando usuarios del sistema...</td>
               </tr>
             </tbody>
           </table>
@@ -708,63 +715,6 @@
     </div>
   </div>
 
-  <!-- Modal: Autenticación con Supabase -->
-  <div id="modal-auth" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-        <div class="flex items-center gap-2">
-          <span class="text-emerald-400 text-lg">⚡</span>
-          <h3 class="text-base font-semibold text-white" id="modal-auth-title">Autenticación Supabase</h3>
-        </div>
-        <button onclick="closeModal('modal-auth')" class="text-slate-400 hover:text-white">&times;</button>
-      </div>
-
-      <!-- Tabs Login vs Registro -->
-      <div class="flex p-1 bg-slate-950 rounded-xl border border-slate-800">
-        <button id="tab-auth-login" type="button" onclick="switchAuthMode('login')" class="flex-1 py-1.5 text-xs font-semibold rounded-lg transition text-white bg-slate-800 shadow-sm">
-          Iniciar Sesión
-        </button>
-        <button id="tab-auth-register" type="button" onclick="switchAuthMode('register')" class="flex-1 py-1.5 text-xs font-semibold rounded-lg transition text-slate-400 hover:text-slate-200">
-          Crear Cuenta
-        </button>
-      </div>
-
-      <!-- Alerta de Error -->
-      <div id="auth-error-alert" class="hidden p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs">
-      </div>
-
-      <!-- Formulario Auth -->
-      <form id="form-auth" onsubmit="event.preventDefault(); submitAuth();" class="space-y-3">
-        <div>
-          <label class="block text-xs font-medium text-slate-300 mb-1">Correo Electrónico</label>
-          <input type="email" id="auth-input-email" required class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="tu-correo@empresa.com">
-        </div>
-        <div>
-          <label class="block text-xs font-medium text-slate-300 mb-1">Contraseña</label>
-          <input type="password" id="auth-input-password" required minlength="6" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="••••••••">
-          <p class="text-[11px] text-slate-500 mt-1">Mínimo 6 caracteres.</p>
-        </div>
-        <div id="auth-field-confirm-password" class="hidden">
-          <label class="block text-xs font-medium text-slate-300 mb-1">Confirmar Contraseña</label>
-          <input type="password" id="auth-input-confirm-password" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="••••••••">
-        </div>
-
-        <div class="pt-2">
-          <button type="submit" id="btn-auth-submit" class="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-semibold transition shadow-sm flex items-center justify-center gap-2">
-            <span id="btn-auth-text">Iniciar Sesión</span>
-          </button>
-        </div>
-      </form>
-
-      <div class="text-center pt-2 border-t border-slate-800">
-        <p class="text-xs text-slate-400" id="auth-toggle-caption">
-          ¿No tienes una cuenta aún?
-          <button type="button" onclick="switchAuthMode('register')" class="text-emerald-400 hover:underline font-medium">Regístrate</button>
-        </p>
-      </div>
-    </div>
-  </div>
-
   <!-- Modal: Crear Nuevo Usuario (Admin) -->
   <div id="modal-admin-create-user" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
     <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
@@ -784,8 +734,9 @@
           <input type="text" id="admin-user-name" required class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="Ej. Capo, Fabi, Dylan...">
         </div>
         <div>
-          <label class="block text-xs font-medium text-slate-300 mb-1">Correo Electrónico</label>
-          <input type="email" id="admin-user-email" required class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="usuario@equipo.com">
+          <label class="block text-xs font-medium text-slate-300 mb-1">Usuario para iniciar sesión</label>
+          <input type="text" id="admin-user-username" required minlength="3" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9._\-]{2,31}" autocapitalize="none" spellcheck="false" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500" placeholder="ej. lider.builder">
+          <p class="text-[11px] text-slate-500 mt-0.5">3 a 32 caracteres: letras, números, punto, guion o guion bajo. No hace falta correo.</p>
         </div>
         <div>
           <label class="block text-xs font-medium text-slate-300 mb-1">Contraseña Inicial</label>
@@ -794,10 +745,14 @@
         </div>
         <div>
           <label class="block text-xs font-medium text-slate-300 mb-1">Rol en el Sistema</label>
-          <select id="admin-user-role" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500">
-            <option value="lider" selected>⭐ Líder (Califica tareas, gestiona sprints)</option>
-            <option value="admin">👑 Administrador (Acceso total y gestión de usuarios)</option>
+          <select id="admin-user-role" onchange="toggleAreaField('admin-user-role', 'admin-user-area-field')" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500">
+            <option value="lider" selected>⭐ Líder (Evalúa solo a los integrantes de su área)</option>
+            <option value="admin">👑 Administrador (Ve todas las áreas y gestiona usuarios)</option>
           </select>
+        </div>
+        <div id="admin-user-area-field">
+          <label class="block text-xs font-medium text-slate-300 mb-1">Área que dirige</label>
+          <select id="admin-user-area" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500"></select>
         </div>
 
         <div class="flex justify-end gap-3 pt-3 border-t border-slate-800">
@@ -829,15 +784,19 @@
           <input type="text" id="edit-user-name" required class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500">
         </div>
         <div>
-          <label class="block text-xs font-medium text-slate-300 mb-1">Correo Electrónico</label>
-          <input type="text" id="edit-user-email" disabled class="w-full bg-slate-950/60 border border-slate-800 rounded-lg px-3 py-2 text-slate-500 text-sm cursor-not-allowed">
+          <label class="block text-xs font-medium text-slate-300 mb-1">Usuario</label>
+          <input type="text" id="edit-user-username" disabled class="w-full bg-slate-950/60 border border-slate-800 rounded-lg px-3 py-2 text-slate-500 text-sm cursor-not-allowed">
         </div>
         <div>
           <label class="block text-xs font-medium text-slate-300 mb-1">Rol</label>
-          <select id="edit-user-role" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500">
-            <option value="lider">⭐ Líder (Califica tareas, gestiona sprints)</option>
-            <option value="admin">👑 Administrador (Acceso total y gestión de usuarios)</option>
+          <select id="edit-user-role" onchange="toggleAreaField('edit-user-role', 'edit-user-area-field')" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500">
+            <option value="lider">⭐ Líder (Evalúa solo a los integrantes de su área)</option>
+            <option value="admin">👑 Administrador (Ve todas las áreas y gestiona usuarios)</option>
           </select>
+        </div>
+        <div id="edit-user-area-field">
+          <label class="block text-xs font-medium text-slate-300 mb-1">Área que dirige</label>
+          <select id="edit-user-area" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500"></select>
         </div>
         <div>
           <label class="block text-xs font-medium text-slate-300 mb-1">Estado de la Cuenta</label>
@@ -867,6 +826,6 @@
   <div id="toast-container" class="fixed bottom-5 right-5 z-50 space-y-2"></div>
 
   <!-- Script de la Aplicación -->
-  <script src="/static/js/app.js?v=2.0"></script>
+  <script src="/static/js/app.js?v=2.3"></script>
 </body>
 </html>

@@ -1,7 +1,9 @@
+import html
+import logging
 import os
-from typing import Any, Dict, Optional
-from fastapi import Depends, FastAPI, HTTPException, Response, status
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from typing import Optional
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.core.auth import auth_service, get_current_user, get_optional_user, require_admin
@@ -21,6 +23,8 @@ from src.models.schemas import (
     UserUpdateAdmin,
 )
 
+logger = logging.getLogger("taskmetrics")
+
 
 def create_app() -> FastAPI:
     app = FastAPI(
@@ -29,22 +33,56 @@ def create_app() -> FastAPI:
         version="2.2.0"
     )
 
-    def get_service(token: Optional[str] = None) -> TaskMetricsService:
-        """Inicializa el servicio configurado con el token de Supabase para respetar las políticas RLS."""
-        if Config.is_supabase_configured():
-            try:
-                repo = SupabaseMetricsRepository(
-                    url=Config.SUPABASE_URL,
-                    key=Config.SUPABASE_KEY,
-                    auth_token=token
+    def known_areas() -> list:
+        """Áreas configuradas más las que ya tengan datos (p. ej. 'general' tras una migración)."""
+        if auth_service.is_configured:
+            with_data = SupabaseMetricsRepository.list_areas(auth_service.db)
+        else:
+            with_data = auth_service.local.list_areas()
+        return Config.AREAS + [a for a in with_data if a not in Config.AREAS]
+
+    def resolve_area(current_user: dict, requested: Optional[str]) -> str:
+        """Un líder siempre opera sobre su área; el admin elige cuál consultar."""
+        if current_user.get("role") != "admin":
+            area = current_user.get("area")
+            if not area:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Tu usuario no tiene un área asignada. Pide al administrador que la configure."
                 )
-                # Verifica si las tablas ya fueron creadas en la nube de Supabase
-                repo.client.table("programmers").select("id").limit(1).execute()
-                return TaskMetricsService(repo)
-            except Exception:
-                # Si las tablas aún no existen en Supabase, usa el almacén local SQLite
-                return TaskMetricsService(SQLiteMetricsRepository())
-        return TaskMetricsService(SQLiteMetricsRepository())
+            return area
+
+        area = (requested or "").strip().lower()
+        if not area:
+            areas = Config.AREAS or known_areas()
+            if not areas:
+                raise HTTPException(status_code=400, detail="No hay áreas configuradas (variable AREAS).")
+            return areas[0]
+        # Solo se consultan los datos cuando el área pedida no es una de las configuradas
+        if area not in Config.AREAS and area not in known_areas():
+            raise HTTPException(status_code=400, detail=f"Área desconocida: '{requested}'.")
+        return area
+
+    def get_service(current_user: dict, requested_area: Optional[str] = None) -> TaskMetricsService:
+        area = resolve_area(current_user, requested_area)
+        if auth_service.is_configured:
+            return TaskMetricsService(SupabaseMetricsRepository(auth_service.db, area))
+        return TaskMetricsService(SQLiteMetricsRepository(area=area))
+
+    @app.exception_handler(Exception)
+    async def unexpected_error(request: Request, exc: Exception):
+        logger.exception("Error no controlado en %s %s", request.method, request.url.path)
+        detail = "Error interno del servidor."
+        if auth_service.is_configured:
+            from postgrest.exceptions import APIError
+
+            if isinstance(exc, APIError):
+                detail = f"Supabase rechazó la operación: {exc.message}"
+                if exc.code in ("PGRST205", "PGRST204", "42P01", "42703"):
+                    detail += " Ejecuta database/schema.sql en el SQL Editor de Supabase."
+            else:
+                detail = f"No se pudo completar la operación con Supabase: {exc}"
+        return JSONResponse(status_code=502 if auth_service.is_configured else 500, content={"detail": detail})
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
     static_dir = os.path.join(current_dir, "static")
@@ -61,23 +99,16 @@ def create_app() -> FastAPI:
         html_file = os.path.join(templates_dir, "index.html")
         if os.path.exists(html_file):
             with open(html_file, "r", encoding="utf-8") as f:
-                return f.read()
+                return f.read().replace("{{STUDIO_NAME}}", html.escape(Config.STUDIO_NAME))
         return "<h1>TaskMetrics</h1><p>Archivo index.html no encontrado.</p>"
 
     # -------------------------------------------------------------------------
     # API Autenticación Supabase
     # -------------------------------------------------------------------------
-    @app.post("/api/auth/register")
-    async def register_user(payload: UserCredentials):
-        try:
-            return auth_service.sign_up(payload.email, payload.password)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-
     @app.post("/api/auth/login")
     async def login_user(payload: UserCredentials):
         try:
-            return auth_service.sign_in(payload.email, payload.password)
+            return auth_service.sign_in(payload.username, payload.password)
         except ValueError as e:
             raise HTTPException(status_code=401, detail=str(e))
 
@@ -98,21 +129,22 @@ def create_app() -> FastAPI:
     async def get_me(current_user: dict = Depends(get_current_user)):
         return {
             "status": "success",
-            "user": {
-                "id": current_user["id"],
-                "email": current_user["email"],
-                "name": current_user.get("name", current_user["email"].split("@")[0].capitalize()),
-                "role": current_user.get("role", "lider"),
-                "active": current_user.get("active", True)
-            }
+            "user": {k: v for k, v in current_user.items() if k != "token"}
         }
 
     @app.get("/api/auth/status")
     async def get_auth_status():
         return {
-            "supabase_configured": Config.is_supabase_configured(),
-            "supabase_url": Config.SUPABASE_URL if Config.is_supabase_configured() else None
+            "supabase_configured": auth_service.is_configured,
+            "studio_name": Config.STUDIO_NAME,
         }
+
+    @app.get("/api/areas")
+    async def list_areas(current_user: dict = Depends(get_current_user)):
+        """Áreas que el usuario puede consultar: todas para el admin, la propia para un líder."""
+        if current_user.get("role") == "admin":
+            return {"areas": known_areas(), "assignable": Config.AREAS}
+        return {"areas": [resolve_area(current_user, None)], "assignable": []}
 
     # -------------------------------------------------------------------------
     # API Administración de Usuarios (Exclusivo Administrador)
@@ -124,11 +156,12 @@ def create_app() -> FastAPI:
     @app.post("/api/admin/users")
     async def create_system_user(payload: UserCreateAdmin, admin: dict = Depends(require_admin)):
         try:
-            return auth_service.create_user_by_admin(
-                email=payload.email,
+            return auth_service.create_user(
+                username=payload.username,
                 password=payload.password,
                 name=payload.name,
-                role=payload.role
+                role=payload.role,
+                area=payload.area
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -136,24 +169,29 @@ def create_app() -> FastAPI:
     @app.put("/api/admin/users/{user_id}")
     async def update_system_user(user_id: str, payload: UserUpdateAdmin, admin: dict = Depends(require_admin)):
         try:
-            success = auth_service.update_user_by_admin(
+            success = auth_service.update_user(
                 user_id=user_id,
+                acting_user_id=admin["id"],
                 name=payload.name,
                 role=payload.role,
+                area=payload.area,
                 active=payload.active,
                 password=payload.password
             )
-            if not success:
-                raise HTTPException(status_code=404, detail="Usuario no encontrado.")
-            return {"status": "success", "message": "Usuario actualizado correctamente."}
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        if not success:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+        return {"status": "success", "message": "Usuario actualizado correctamente."}
 
     @app.delete("/api/admin/users/{user_id}")
     async def delete_system_user(user_id: str, admin: dict = Depends(require_admin)):
         if user_id == admin["id"]:
             raise HTTPException(status_code=400, detail="No puedes eliminar tu propia cuenta de administrador.")
-        success = auth_service.delete_user_by_admin(user_id)
+        try:
+            success = auth_service.delete_user(user_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         if not success:
             raise HTTPException(status_code=404, detail="Usuario no encontrado.")
         return {"status": "success", "message": "Usuario eliminado correctamente."}
@@ -165,9 +203,10 @@ def create_app() -> FastAPI:
     @app.get("/api/metrics")
     async def get_metrics(
         up_to: Optional[int] = None,
+        area: Optional[str] = None,
         current_user: dict = Depends(get_current_user)
     ):
-        service = get_service(current_user.get("token"))
+        service = get_service(current_user, area)
         matrix = service.get_metrics_matrix(
             precision_decimals=Config.DEFAULT_PRECISION,
             up_to_sprint=up_to
@@ -175,6 +214,7 @@ def create_app() -> FastAPI:
         progs = [p.name for p in service.get_programmers(active_only=True)]
 
         return {
+            "area": service.repository.area,
             "sprints": matrix.sprints,
             "sprint_names": matrix.sprint_names,
             "programmers": progs,
@@ -199,16 +239,17 @@ def create_app() -> FastAPI:
     # API Sprints y Tareas (Rutas Protegidas)
     # -------------------------------------------------------------------------
     @app.get("/api/sprints")
-    async def list_sprints(current_user: dict = Depends(get_current_user)):
-        service = get_service(current_user.get("token"))
+    async def list_sprints(area: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+        service = get_service(current_user, area)
         return service.get_sprints_list()
 
     @app.get("/api/sprints/{sprint_number}")
     async def get_sprint_detail(
         sprint_number: int,
+        area: Optional[str] = None,
         current_user: dict = Depends(get_current_user)
     ):
-        service = get_service(current_user.get("token"))
+        service = get_service(current_user, area)
         detail = service.get_sprint_detail(sprint_number)
         if not detail:
             raise HTTPException(status_code=404, detail=f"Sprint {sprint_number} no encontrado.")
@@ -229,9 +270,10 @@ def create_app() -> FastAPI:
     @app.post("/api/sprints")
     async def create_sprint(
         payload: SprintCreateRequest,
+        area: Optional[str] = None,
         current_user: dict = Depends(get_current_user)
     ):
-        service = get_service(current_user.get("token"))
+        service = get_service(current_user, area)
         tasks = [
             TaskItem(
                 title=t.title.strip(),
@@ -252,9 +294,10 @@ def create_app() -> FastAPI:
     async def update_sprint(
         sprint_number: int,
         payload: SprintUpdateRequest,
+        area: Optional[str] = None,
         current_user: dict = Depends(get_current_user)
     ):
-        service = get_service(current_user.get("token"))
+        service = get_service(current_user, area)
         tasks = [
             TaskItem(
                 title=t.title.strip(),
@@ -274,9 +317,10 @@ def create_app() -> FastAPI:
     @app.delete("/api/sprints/{sprint_number}")
     async def delete_sprint(
         sprint_number: int,
+        area: Optional[str] = None,
         current_user: dict = Depends(get_current_user)
     ):
-        service = get_service(current_user.get("token"))
+        service = get_service(current_user, area)
         success = service.delete_sprint(sprint_number)
         if not success:
             raise HTTPException(status_code=404, detail=f"Sprint {sprint_number} no encontrado.")
@@ -286,17 +330,18 @@ def create_app() -> FastAPI:
     # API Integrantes (Rutas Protegidas)
     # -------------------------------------------------------------------------
     @app.get("/api/programmers")
-    async def list_programmers(current_user: dict = Depends(get_current_user)):
-        service = get_service(current_user.get("token"))
+    async def list_programmers(area: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+        service = get_service(current_user, area)
         progs = service.get_programmers(active_only=False)
         return [{"id": p.id, "name": p.name, "active": p.active} for p in progs]
 
     @app.get("/api/programmers/{name}/history")
     async def get_programmer_history(
         name: str,
+        area: Optional[str] = None,
         current_user: dict = Depends(get_current_user)
     ):
-        service = get_service(current_user.get("token"))
+        service = get_service(current_user, area)
         history = service.get_programmer_history(name)
         if not history:
             raise HTTPException(status_code=404, detail=f"Integrante '{name}' no encontrado.")
@@ -305,18 +350,20 @@ def create_app() -> FastAPI:
     @app.post("/api/programmers")
     async def add_programmer(
         payload: ProgrammerCreate,
+        area: Optional[str] = None,
         current_user: dict = Depends(get_current_user)
     ):
-        service = get_service(current_user.get("token"))
+        service = get_service(current_user, area)
         prog = service.register_programmer(payload.name)
         return {"status": "success", "programmer": {"name": prog.name}}
 
     @app.put("/api/programmers")
     async def update_programmer(
         payload: ProgrammerUpdate,
+        area: Optional[str] = None,
         current_user: dict = Depends(get_current_user)
     ):
-        service = get_service(current_user.get("token"))
+        service = get_service(current_user, area)
         success = service.update_programmer(
             old_name=payload.old_name,
             new_name=payload.new_name,
@@ -329,9 +376,10 @@ def create_app() -> FastAPI:
     @app.delete("/api/programmers/{name}")
     async def remove_programmer(
         name: str,
+        area: Optional[str] = None,
         current_user: dict = Depends(get_current_user)
     ):
-        service = get_service(current_user.get("token"))
+        service = get_service(current_user, area)
         success = service.remove_programmer(name)
         if not success:
             raise HTTPException(status_code=404, detail=f"Integrante '{name}' no encontrado.")
@@ -344,9 +392,10 @@ def create_app() -> FastAPI:
     async def export_data(
         format: str = "csv",
         up_to: Optional[int] = None,
+        area: Optional[str] = None,
         current_user: dict = Depends(get_current_user)
     ):
-        service = get_service(current_user.get("token"))
+        service = get_service(current_user, area)
         if format.lower() == "md":
             content = service.export_to_markdown_string(up_to_sprint=up_to)
             return PlainTextResponse(

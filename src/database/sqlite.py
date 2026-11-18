@@ -1,20 +1,49 @@
 from contextlib import contextmanager
+import hashlib
+import hmac
 import os
+import secrets
 import sqlite3
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+from src.core.config import Config
 from src.models.schemas import Programmer, SprintDetail, TaskItem
 from .base import BaseMetricsRepository
+
+DEFAULT_AREA = "general"
+_HASH_PREFIX = "pbkdf2$"
+_PROFILE_COLUMNS = "id, username, name, role, area, active, created_at"
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 200_000).hex()
+    return f"{_HASH_PREFIX}{salt}${digest}"
+
+
+def _password_matches(stored: str, password: str) -> bool:
+    if not stored:
+        return False
+    if not stored.startswith(_HASH_PREFIX):
+        # Bases locales antiguas guardaban la contraseña en texto plano
+        return hmac.compare_digest(stored, password)
+    try:
+        _, salt, digest = stored.split("$")
+        candidate = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 200_000).hex()
+    except ValueError:
+        return False
+    return hmac.compare_digest(candidate, digest)
 
 
 class SQLiteMetricsRepository(BaseMetricsRepository):
     """
-    Repositorio persistente no volátil utilizando SQLite (PostgreSQL-compatible DDL local).
-    Garantiza que la información nunca se pierda entre reinicios.
+    Repositorio persistente local en SQLite (modo sin Supabase).
+    Cada instancia opera sobre una sola área: integrantes y sprints de otras áreas no son visibles.
     """
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: Optional[str] = None, area: str = DEFAULT_AREA):
+        db_path = db_path or Config.SQLITE_PATH
         if not db_path:
             base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             db_dir = os.path.join(base_dir, "database")
@@ -22,6 +51,7 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
             self.db_path = os.path.join(db_dir, "taskmetrics.db")
         else:
             self.db_path = db_path
+        self.area = (area or DEFAULT_AREA).strip().lower()
 
         self._init_db()
 
@@ -35,24 +65,67 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
         finally:
             conn.close()
 
+    _SCOPED_TABLES_DDL = """
+        CREATE TABLE IF NOT EXISTS programmers (
+            id TEXT PRIMARY KEY,
+            area TEXT NOT NULL DEFAULT 'general',
+            name TEXT NOT NULL COLLATE NOCASE,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(area, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS sprints (
+            id TEXT PRIMARY KEY,
+            area TEXT NOT NULL DEFAULT 'general',
+            sprint_number INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'completed',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(area, sprint_number)
+        );
+    """
+
+    def _migrate_legacy_schema(self, conn: sqlite3.Connection) -> None:
+        """Bases creadas antes de las áreas: integrantes y sprints eran globales."""
+        columns = [r["name"] for r in conn.execute("PRAGMA table_info(sprints)")]
+        if not columns or "area" in columns:
+            return
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = OFF;")
+        # Evita que el RENAME reescriba las llaves foráneas de tasks/task_assignments
+        conn.execute("PRAGMA legacy_alter_table = ON;")
+        try:
+            conn.executescript(
+                """
+                BEGIN;
+                ALTER TABLE programmers RENAME TO _legacy_programmers;
+                ALTER TABLE sprints RENAME TO _legacy_sprints;
+                """
+                + self._SCOPED_TABLES_DDL
+                + """
+                INSERT INTO programmers (id, area, name, active, created_at)
+                    SELECT id, 'general', name, active, created_at FROM _legacy_programmers;
+                INSERT INTO sprints (id, area, sprint_number, name, status, created_at)
+                    SELECT id, 'general', sprint_number, name, status, created_at FROM _legacy_sprints;
+                DROP TABLE _legacy_programmers;
+                DROP TABLE _legacy_sprints;
+                COMMIT;
+                """
+            )
+        finally:
+            conn.execute("PRAGMA legacy_alter_table = OFF;")
+            conn.execute("PRAGMA foreign_keys = ON;")
+
     def _init_db(self):
         with self._get_connection() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS programmers (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-                    active INTEGER NOT NULL DEFAULT 1,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-
-                CREATE TABLE IF NOT EXISTS sprints (
-                    id TEXT PRIMARY KEY,
-                    sprint_number INTEGER NOT NULL UNIQUE,
-                    name TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'completed',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-
+            self._migrate_legacy_schema(conn)
+            # Antes las cuentas se identificaban por correo; el valor se conserva como usuario
+            legacy_profile = [r["name"] for r in conn.execute("PRAGMA table_info(user_profiles)")]
+            if "email" in legacy_profile and "username" not in legacy_profile:
+                conn.execute("ALTER TABLE user_profiles RENAME COLUMN email TO username")
+                conn.commit()
+            conn.executescript(self._SCOPED_TABLES_DDL + """
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
                     sprint_id TEXT NOT NULL REFERENCES sprints(id) ON DELETE CASCADE,
@@ -72,36 +145,63 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
 
                 CREATE TABLE IF NOT EXISTS user_profiles (
                     id TEXT PRIMARY KEY,
-                    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
                     name TEXT NOT NULL,
                     role TEXT NOT NULL DEFAULT 'lider',
+                    area TEXT,
                     password TEXT NOT NULL DEFAULT '',
                     active INTEGER NOT NULL DEFAULT 1,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+
+                CREATE TABLE IF NOT EXISTS local_sessions (
+                    token TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL DEFAULT 'access',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
             """)
 
-            # Sembrar admin inicial por defecto si la tabla está vacía
+            profile_columns = [r["name"] for r in conn.execute("PRAGMA table_info(user_profiles)")]
+            if "area" not in profile_columns:
+                conn.execute("ALTER TABLE user_profiles ADD COLUMN area TEXT")
+
+            # Admin inicial del modo local si todavía no hay usuarios
             cur = conn.cursor()
             cur.execute("SELECT COUNT(*) as count FROM user_profiles")
             if cur.fetchone()["count"] == 0:
                 cur.execute(
-                    "INSERT INTO user_profiles (id, email, name, role, password, active) VALUES (?, ?, ?, ?, ?, ?)",
-                    (str(uuid4()), "admin@taskmetrics.com", "Administrador Principal", "admin", "admin123", 1)
+                    "INSERT INTO user_profiles (id, username, name, role, password, active) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        str(uuid4()),
+                        Config.LOCAL_ADMIN_USERNAME,
+                        "Administrador Principal",
+                        "admin",
+                        hash_password(Config.LOCAL_ADMIN_PASSWORD),
+                        1,
+                    )
                 )
-                conn.commit()
+            conn.commit()
+
+    def list_areas(self) -> List[str]:
+        """Áreas que ya tienen integrantes o sprints registrados."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT area FROM programmers UNION SELECT area FROM sprints ORDER BY area"
+            ).fetchall()
+            return [r["area"] for r in rows]
 
     def add_programmer(self, name: str) -> Programmer:
         clean_name = name.strip()
         with self._get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT id, name, active FROM programmers WHERE name = ?", (clean_name,))
+            cur.execute("SELECT id, name, active FROM programmers WHERE area = ? AND name = ?", (self.area, clean_name))
             row = cur.fetchone()
             if row:
                 return Programmer(id=row["id"], name=row["name"], active=bool(row["active"]))
 
             new_id = str(uuid4())
-            cur.execute("INSERT INTO programmers (id, name, active) VALUES (?, ?, 1)", (new_id, clean_name))
+            cur.execute("INSERT INTO programmers (id, area, name, active) VALUES (?, ?, ?, 1)", (new_id, self.area, clean_name))
             conn.commit()
             return Programmer(id=new_id, name=clean_name, active=True)
 
@@ -109,8 +209,8 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
         with self._get_connection() as conn:
             cur = conn.cursor()
             cur.execute(
-                "UPDATE programmers SET name = ?, active = ? WHERE name = ?",
-                (new_name.strip(), 1 if active else 0, old_name.strip())
+                "UPDATE programmers SET name = ?, active = ? WHERE area = ? AND name = ?",
+                (new_name.strip(), 1 if active else 0, self.area, old_name.strip())
             )
             conn.commit()
             return cur.rowcount > 0
@@ -118,7 +218,7 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
     def remove_programmer(self, name: str) -> bool:
         with self._get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("DELETE FROM programmers WHERE name = ?", (name.strip(),))
+            cur.execute("DELETE FROM programmers WHERE area = ? AND name = ?", (self.area, name.strip()))
             conn.commit()
             return cur.rowcount > 0
 
@@ -126,9 +226,9 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
         with self._get_connection() as conn:
             cur = conn.cursor()
             if active_only:
-                cur.execute("SELECT id, name, active FROM programmers WHERE active = 1 ORDER BY name ASC")
+                cur.execute("SELECT id, name, active FROM programmers WHERE area = ? AND active = 1 ORDER BY name ASC", (self.area,))
             else:
-                cur.execute("SELECT id, name, active FROM programmers ORDER BY name ASC")
+                cur.execute("SELECT id, name, active FROM programmers WHERE area = ? ORDER BY name ASC", (self.area,))
             rows = cur.fetchall()
             return [Programmer(id=r["id"], name=r["name"], active=bool(r["active"])) for r in rows]
 
@@ -142,7 +242,7 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
         with self._get_connection() as conn:
             cur = conn.cursor()
             # 1. Obtener o crear sprint
-            cur.execute("SELECT id FROM sprints WHERE sprint_number = ?", (sprint_number,))
+            cur.execute("SELECT id FROM sprints WHERE area = ? AND sprint_number = ?", (self.area, sprint_number))
             row = cur.fetchone()
             if row:
                 sprint_id = row["id"]
@@ -151,8 +251,8 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
                 cur.execute("DELETE FROM tasks WHERE sprint_id = ?", (sprint_id,))
             else:
                 sprint_id = str(uuid4())
-                cur.execute("INSERT INTO sprints (id, sprint_number, name, status) VALUES (?, ?, ?, ?)",
-                            (sprint_id, sprint_number, name, status))
+                cur.execute("INSERT INTO sprints (id, area, sprint_number, name, status) VALUES (?, ?, ?, ?, ?)",
+                            (sprint_id, self.area, sprint_number, name, status))
 
             # 2. Guardar tareas y asignaciones
             created_tasks: List[TaskItem] = []
@@ -167,11 +267,11 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
 
                 for dev_name in t.assigned_programmers:
                     # Asegurar existencia del programador
-                    cur.execute("SELECT id, name FROM programmers WHERE name = ?", (dev_name.strip(),))
+                    cur.execute("SELECT id, name FROM programmers WHERE area = ? AND name = ?", (self.area, dev_name.strip()))
                     p_row = cur.fetchone()
                     if not p_row:
                         p_id = str(uuid4())
-                        cur.execute("INSERT INTO programmers (id, name, active) VALUES (?, ?, 1)", (p_id, dev_name.strip()))
+                        cur.execute("INSERT INTO programmers (id, area, name, active) VALUES (?, ?, ?, 1)", (p_id, self.area, dev_name.strip()))
                     else:
                         p_id = p_row["id"]
 
@@ -207,16 +307,17 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
                        COUNT(t.id) as task_count
                 FROM sprints s
                 LEFT JOIN tasks t ON s.id = t.sprint_id
+                WHERE s.area = ?
                 GROUP BY s.id, s.sprint_number, s.name, s.status
                 ORDER BY s.sprint_number ASC
             """
-            cur.execute(query)
+            cur.execute(query, (self.area,))
             return [dict(row) for row in cur.fetchall()]
 
     def get_sprint_detail(self, sprint_number: int) -> Optional[SprintDetail]:
         with self._get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT id, sprint_number, name, status FROM sprints WHERE sprint_number = ?", (sprint_number,))
+            cur.execute("SELECT id, sprint_number, name, status FROM sprints WHERE area = ? AND sprint_number = ?", (self.area, sprint_number))
             s_row = cur.fetchone()
             if not s_row:
                 return None
@@ -255,7 +356,7 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
     def delete_sprint(self, sprint_number: int) -> bool:
         with self._get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("DELETE FROM sprints WHERE sprint_number = ?", (sprint_number,))
+            cur.execute("DELETE FROM sprints WHERE area = ? AND sprint_number = ?", (self.area, sprint_number))
             conn.commit()
             return cur.rowcount > 0
 
@@ -264,11 +365,11 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
             cur = conn.cursor()
 
             # 1. Programadores activos
-            cur.execute("SELECT name FROM programmers WHERE active = 1 ORDER BY name ASC")
+            cur.execute("SELECT name FROM programmers WHERE area = ? AND active = 1 ORDER BY name ASC", (self.area,))
             progs = [r["name"] for r in cur.fetchall()]
 
             # 2. Sprints ordenados
-            cur.execute("SELECT sprint_number, name FROM sprints ORDER BY sprint_number ASC")
+            cur.execute("SELECT sprint_number, name FROM sprints WHERE area = ? ORDER BY sprint_number ASC", (self.area,))
             sprint_rows = cur.fetchall()
             sprints = [r["sprint_number"] for r in sprint_rows]
             sprint_names = {r["sprint_number"]: r["name"] for r in sprint_rows}
@@ -285,9 +386,10 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
                 JOIN tasks t ON ta.task_id = t.id
                 JOIN sprints s ON t.sprint_id = s.id
                 JOIN programmers p ON ta.programmer_id = p.id
+                WHERE s.area = ? AND p.area = ?
                 GROUP BY p.name, s.sprint_number
             """
-            cur.execute(query)
+            cur.execute(query, (self.area, self.area))
             for r in cur.fetchall():
                 p_name = r["prog_name"]
                 s_num = r["sprint_number"]
@@ -300,7 +402,7 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
     def get_programmer_history(self, name: str) -> Optional[dict]:
         with self._get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT id, name, active FROM programmers WHERE name = ?", (name.strip(),))
+            cur.execute("SELECT id, name, active FROM programmers WHERE area = ? AND name = ?", (self.area, name.strip()))
             p_row = cur.fetchone()
             if not p_row:
                 return None
@@ -365,89 +467,113 @@ class SQLiteMetricsRepository(BaseMetricsRepository):
             }
 
     # -------------------------------------------------------------------------
-    # Gestión de Usuarios y Roles
+    # Usuarios y sesiones del modo local
     # -------------------------------------------------------------------------
-    def get_user_profile(self, user_id_or_email: str) -> Optional[dict]:
-        with self._get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT id, email, name, role, active, created_at FROM user_profiles WHERE id = ? OR LOWER(email) = LOWER(?)",
-                (user_id_or_email, user_id_or_email)
-            )
-            row = cur.fetchone()
-            if row:
-                return dict(row)
+    @staticmethod
+    def _profile(row: Optional[sqlite3.Row]) -> Optional[dict]:
+        if not row:
             return None
+        profile = dict(row)
+        profile["active"] = bool(profile["active"])
+        return profile
+
+    def get_user_profile(self, user_id_or_username: str) -> Optional[dict]:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                f"SELECT {_PROFILE_COLUMNS} FROM user_profiles WHERE id = ? OR LOWER(username) = LOWER(?)",
+                (user_id_or_username, user_id_or_username)
+            ).fetchone()
+            return self._profile(row)
 
     def list_user_profiles(self) -> List[dict]:
         with self._get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT id, email, name, role, active, created_at FROM user_profiles ORDER BY name ASC")
-            return [dict(r) for r in cur.fetchall()]
+            rows = conn.execute(f"SELECT {_PROFILE_COLUMNS} FROM user_profiles ORDER BY name ASC").fetchall()
+            return [self._profile(r) for r in rows]
 
-    def upsert_user_profile(
+    def verify_credentials(self, username: str, password: str) -> Optional[dict]:
+        """Devuelve el perfil si la contraseña es correcta; None en caso contrario."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT id, password FROM user_profiles WHERE LOWER(username) = LOWER(?)", (username,)
+            ).fetchone()
+            if not row or not _password_matches(row["password"], password):
+                return None
+            if not row["password"].startswith(_HASH_PREFIX):
+                conn.execute(
+                    "UPDATE user_profiles SET password = ? WHERE id = ?",
+                    (hash_password(password), row["id"])
+                )
+                conn.commit()
+        return self.get_user_profile(row["id"])
+
+    def create_user_profile(
         self,
-        user_id: str,
-        email: str,
+        username: str,
         name: str,
-        role: str = "lider",
-        password: str = "",
-        active: bool = True
+        role: str,
+        area: Optional[str],
+        password: str,
     ) -> dict:
+        user_id = str(uuid4())
         with self._get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT id FROM user_profiles WHERE id = ? OR LOWER(email) = LOWER(?)", (user_id, email.lower()))
-            existing = cur.fetchone()
-            if existing:
-                cur.execute(
-                    "UPDATE user_profiles SET name = ?, role = ?, active = ? WHERE id = ?",
-                    (name, role, 1 if active else 0, existing["id"])
+            try:
+                conn.execute(
+                    "INSERT INTO user_profiles (id, username, name, role, area, password, active) VALUES (?, ?, ?, ?, ?, ?, 1)",
+                    (user_id, username.lower(), name, role, area, hash_password(password))
                 )
-            else:
-                cur.execute(
-                    "INSERT INTO user_profiles (id, email, name, role, password, active) VALUES (?, ?, ?, ?, ?, ?)",
-                    (user_id, email.lower(), name, role, password, 1 if active else 0)
-                )
-            conn.commit()
-            return self.get_user_profile(user_id) or {
-                "id": user_id, "email": email, "name": name, "role": role, "active": active
-            }
+                conn.commit()
+            except sqlite3.IntegrityError:
+                raise ValueError(f"Ya existe el usuario '{username}'.")
+        return self.get_user_profile(user_id)
 
-    def update_user_profile(
-        self,
-        user_id: str,
-        name: Optional[str] = None,
-        role: Optional[str] = None,
-        active: Optional[bool] = None,
-        password: Optional[str] = None
-    ) -> bool:
+    def update_user_profile(self, user_id: str, changes: Dict[str, Any]) -> bool:
+        """`changes` admite: name, role, area, active y password."""
+        fields = []
+        vals: List[Any] = []
+        for column in ("name", "role", "area"):
+            if column in changes:
+                fields.append(f"{column} = ?")
+                vals.append(changes[column])
+        if "active" in changes:
+            fields.append("active = ?")
+            vals.append(1 if changes["active"] else 0)
+        if changes.get("password"):
+            fields.append("password = ?")
+            vals.append(hash_password(changes["password"]))
+        if not fields:
+            return self.get_user_profile(user_id) is not None
+        vals.append(user_id)
         with self._get_connection() as conn:
-            cur = conn.cursor()
-            fields = []
-            vals = []
-            if name is not None:
-                fields.append("name = ?")
-                vals.append(name.strip())
-            if role is not None:
-                fields.append("role = ?")
-                vals.append(role)
-            if active is not None:
-                fields.append("active = ?")
-                vals.append(1 if active else 0)
-            if password is not None and len(password) >= 6:
-                fields.append("password = ?")
-                vals.append(password)
-            if not fields:
-                return False
-            vals.append(user_id)
-            cur.execute(f"UPDATE user_profiles SET {', '.join(fields)} WHERE id = ?", vals)
+            cur = conn.execute(f"UPDATE user_profiles SET {', '.join(fields)} WHERE id = ?", vals)
+            if "active" in changes and not changes["active"]:
+                conn.execute("DELETE FROM local_sessions WHERE user_id = ?", (user_id,))
             conn.commit()
             return cur.rowcount > 0
 
     def delete_user_profile(self, user_id: str) -> bool:
         with self._get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM user_profiles WHERE id = ?", (user_id,))
+            cur = conn.execute("DELETE FROM user_profiles WHERE id = ?", (user_id,))
             conn.commit()
             return cur.rowcount > 0
 
+    def create_session(self, user_id: str, kind: str = "access") -> str:
+        token = secrets.token_urlsafe(32)
+        with self._get_connection() as conn:
+            conn.execute(
+                "INSERT INTO local_sessions (token, user_id, kind) VALUES (?, ?, ?)",
+                (token, user_id, kind)
+            )
+            conn.commit()
+        return token
+
+    def get_session_profile(self, token: str, kind: str = "access") -> Optional[dict]:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT user_id FROM local_sessions WHERE token = ? AND kind = ?", (token, kind)
+            ).fetchone()
+        return self.get_user_profile(row["user_id"]) if row else None
+
+    def delete_session(self, token: str) -> None:
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM local_sessions WHERE token = ?", (token,))
+            conn.commit()

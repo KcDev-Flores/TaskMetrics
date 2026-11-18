@@ -38,10 +38,10 @@ TaskMetrics/
 │           ├── css/styles.css
 │           └── js/app.js      # Lógica frontend reactiva
 ├── tests/                     # 🧪 Suite de pruebas unitarias y de API
+│   ├── test_auth.py           # Sesión, roles y aislamiento entre áreas
 │   └── test_metrics.py
 ├── database/                  # 🗄️ Scripts SQL
-│   └── schema.sql             # Tablas, tareas, asignaciones, llaves foráneas y RLS
-├── .env.example               # Plantilla de credenciales Supabase
+│   └── schema.sql             # Tablas, áreas, migración y RLS (solo backend)
 ├── .gitignore                 # Exclusiones de Git
 ├── requirements.txt           # Dependencias de producción
 ├── run.py                     # 🌐 Servidor Web principal (FastAPI)
@@ -82,7 +82,7 @@ Abre tu navegador en:
 
 - **Menú Central `⚙️ Acciones ▾`:**
   - **Sprint:** Agregar nuevo sprint, editar sprint existente o eliminar sprint.
-  - **Integrantes:** Agregar nuevo integrante, editar integrante o eliminar integrante.
+  - **Integrantes:** Agregar nuevo integrante, editar integrante o eliminar integrante (del área activa).
 - **Desglose de Tareas y Colaboración Compartida:**
   - Define tareas por sprint con su título y estado.
   - Asigna uno o múltiples desarrolladores a una misma tarea si trabajaron en equipo (ej. Capo y Dreymor en Motor Principal).
@@ -99,43 +99,67 @@ Abre tu navegador en:
 
 ---
 
-## 🔐 Supabase Auth y Rutas Protegidas
+## 👥 Roles y Áreas
 
-TaskMetrics implementa autenticación mediante **Supabase Auth** y protección a nivel de API y base de datos con **Row Level Security (RLS)**:
+- **Admin:** es el único que crea, edita o elimina usuarios (pestaña **Usuarios**). Ve y edita todas las áreas con el selector **Área** de la cabecera.
+- **Líder:** pertenece a un área (`diseñador`, `blockbench`, `builder`, `doblaje`; configurable con `AREAS`). Solo ve y evalúa a los integrantes y sprints de su área; el porcentaje de esfuerzo se calcula dentro de ella.
+- No existe registro público: una cuenta sin perfil creado por el admin no puede entrar.
+- Se entra con **nombre de usuario y contraseña**, sin correo (por ejemplo `admin.cafeestudio`).
 
-1. **Seguridad en Base de Datos (RLS):**
-   - El archivo [`database/schema.sql`](file:///c:/Users/ADMIN/Documents/projects/GitHub%20Destkop/TaskMetrics/database/schema.sql) implementa políticas RLS mediante cláusulas `TO authenticated`.
-   - Se revocan permisos de mutación al rol anónimo (`anon`) y se exige que todo usuario esté validado para leer, crear, actualizar o eliminar sprints, tareas e integrantes.
-2. **Endpoints de Autenticación:**
-   - `POST /api/auth/register`: Registro de nuevos usuarios en Supabase Auth.
-   - `POST /api/auth/login`: Autenticación con email y contraseña, retornando `access_token` (JWT) y `refresh_token`.
-   - `POST /api/auth/refresh`: Refresco de sesión para tokens expirados.
-   - `POST /api/auth/logout`: Cierre de sesión.
-   - `GET /api/auth/me`: Verificación de identidad y rol del usuario logueado.
-3. **Rutas Protegidas:**
-   - Todas las llamadas de lectura y escritura (`/api/metrics`, `/api/sprints`, `/api/programmers`, `/api/export`) requieren el header `Authorization: Bearer <token>`.
-   - Las peticiones sin token o con token revocado devuelven automáticamente `401 Unauthorized`.
-4. **Interfaz de Usuario Web:**
-   - Barra superior con botón dinámico de **Iniciar Sesión** o badge de perfil (`usuario@correo.com`) con botón de cierre de sesión.
-   - Modal reactivo con pestañas de *Iniciar Sesión* y *Crear Cuenta* con validación de credenciales.
-   - Inyección automática de tokens JWT en todas las consultas asíncronas (`authFetch`).
-   - Modo Dev / Offline: Si Supabase no está configurado en `.env`, el sistema permite autenticación local dev con credenciales de prueba (`admin@taskmetrics.com` / `admin123`) para desarrollo ágil sin conexión.
+Los integrantes y la numeración de sprints son independientes en cada área.
 
 ---
 
-## ☁️ Conexión con Supabase en Producción
+## 🔐 Autenticación y Acceso a Datos
 
-Por defecto, si no configuras `.env`, el sistema opera en modo local no volátil. Para conectar tu proyecto en la nube:
+- Las cuentas viven en **Supabase Auth**; el usuario, el rol y el área están en la tabla `user_profiles`. Como Supabase Auth identifica las cuentas por correo, cada usuario se registra allí como `<usuario>@<LOGIN_EMAIL_DOMAIN>`; ese correo interno nunca se escribe ni recibe mensajes.
+- El backend FastAPI es la única puerta a los datos: valida el token en cada petición, aplica el área del usuario y accede a Supabase con la llave `service_role`.
+- [`database/schema.sql`](database/schema.sql) activa RLS sin políticas, así que las llaves públicas (`anon` / `authenticated`) no pueden leer ni escribir las tablas directamente.
+- Endpoints de sesión: `POST /api/auth/login`, `POST /api/auth/refresh`, `POST /api/auth/logout`, `GET /api/auth/me`. La interfaz renueva el token de acceso automáticamente cuando caduca.
+- Todas las rutas de datos (`/api/metrics`, `/api/sprints`, `/api/programmers`, `/api/export`) exigen `Authorization: Bearer <token>`; el admin añade `?area=<área>`.
+- **Modo local (sin Supabase):** si faltan las variables de Supabase, los datos y usuarios se guardan en SQLite (`database/taskmetrics.db`) con un admin inicial (`LOCAL_ADMIN_USERNAME` / `LOCAL_ADMIN_PASSWORD`, por defecto `admin` / `admin123`). Es solo para desarrollo: no lo despliegues así.
 
-1. En tu proyecto de Supabase, entra a **SQL Editor**, copia el contenido de [`database/schema.sql`](file:///c:/Users/ADMIN/Documents/projects/GitHub%20Destkop/TaskMetrics/database/schema.sql) y pulsa **Run**.
-2. Copia `.env.example` a `.env` y coloca tus credenciales:
+---
+
+## ☁️ Conexión con Supabase
+
+1. En tu proyecto de Supabase abre **SQL Editor**, pega el contenido de [`database/schema.sql`](database/schema.sql) y pulsa **Run**. Se puede volver a ejecutar sin perder datos; también migra una base creada con una versión anterior.
+2. Define las tres variables de entorno (en un archivo `.env` en local, o en el panel del proveedor al desplegar):
    ```env
    SUPABASE_URL=https://<tu-proyecto>.supabase.co
-   SUPABASE_KEY=<tu-anon-key>
+   SUPABASE_KEY=<llave anon o publishable>
+   SUPABASE_SERVICE_ROLE_KEY=<llave service_role o secret>
    ```
-3. Inicia la aplicación:
+   Si defines `SUPABASE_URL` pero falta alguna de las llaves, la aplicación no arranca y lo indica en el log.
+3. Crea el primer administrador (después podrás crear al resto desde la web):
    ```powershell
-   python run.py
+   python main.py create-user admin.cafeestudio "Tu Nombre" --role admin
    ```
-4. Abre `http://127.0.0.1:8000/` y regístrate o inicia sesión con tu usuario de Supabase.
+4. Inicia la aplicación con `python run.py` y entra con esa cuenta.
 
+### Despliegue (p. ej. Render)
+
+- Despliega la rama que contiene esta versión y usa `pip install -r requirements.txt` como build y `python run.py` como comando de inicio.
+- Variables: las tres de Supabase y `HOST=0.0.0.0`. `PORT` lo asigna el proveedor.
+- Para comprobarlo abre `/api/auth/status`: debe responder `"supabase_configured": true`.
+
+Variables opcionales:
+
+| Variable | Por defecto | Para qué sirve |
+|---|---|---|
+| `STUDIO_NAME` | `Café Estudio` | Nombre que se muestra en la interfaz |
+| `AREAS` | `diseñador,blockbench,builder,doblaje` | Áreas que se pueden asignar a un líder |
+| `LOGIN_EMAIL_DOMAIN` | `usuarios.taskmetrics.local` | Dominio del correo interno de cada cuenta. No lo cambies con cuentas ya creadas: dejarían de poder entrar |
+| `METRICS_PRECISION` | `4` | Decimales de los porcentajes |
+| `LOCAL_ADMIN_USERNAME` / `LOCAL_ADMIN_PASSWORD` | `admin` / `admin123` | Admin inicial del modo local |
+
+Recomendado: en Supabase → **Authentication → Sign In / Providers** desactiva *Allow new users to sign up* (las cuentas las crea el admin).
+
+## 🧪 Pruebas
+
+```powershell
+pip install pytest httpx
+python -m pytest
+```
+
+Las pruebas usan siempre una base SQLite temporal; nunca tocan Supabase.

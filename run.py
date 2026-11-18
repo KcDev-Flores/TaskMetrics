@@ -22,9 +22,9 @@ if __name__ == "__main__":
     print(f" * Panel Web: http://{Config.HOST}:{Config.PORT}")
     print(f" * Documentación API: http://{Config.HOST}:{Config.PORT}/docs")
     if Config.is_supabase_configured():
-        print(" * Base de Datos: Conectado a Supabase (Cloud PostgreSQL)")
+        print(" * Base de Datos: Supabase (Cloud PostgreSQL)")
     else:
-        print(" * Base de Datos: Modo Memoria Local (Offline/Dev)")
+        print(" * Base de Datos: modo local SQLite (solo desarrollo)")
     print("=" * 70)
     print("Presiona CTRL+C para detener el servidor.\n")
 

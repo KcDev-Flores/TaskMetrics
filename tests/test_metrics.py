@@ -112,33 +112,13 @@ class TestSQLiteMetricsRepository(unittest.TestCase):
 
 class TestWebAPI(unittest.TestCase):
     def setUp(self):
-        import tempfile
-        from src.database.sqlite import SQLiteMetricsRepository
-        from src.services.metrics_service import TaskMetricsService
-
-        self.temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        self.temp_db.close()
-        self.repo = SQLiteMetricsRepository(db_path=self.temp_db.name)
-
-        self.app = create_app()
-        # Sobrescribir get_service en la app de prueba para usar base aislada
-        self.client = TestClient(self.app)
-
-        # Iniciar sesión de prueba con usuario confirmado
+        self.client = TestClient(create_app())
         login_res = self.client.post("/api/auth/login", json={
-            "email": "admin@taskmetrics.com",
+            "username": "admin",
             "password": "admin123"
         })
         self.token = login_res.json()["access_token"]
         self.headers = {"Authorization": f"Bearer {self.token}"}
-
-    def tearDown(self):
-        import os
-        try:
-            if os.path.exists(self.temp_db.name):
-                os.remove(self.temp_db.name)
-        except Exception:
-            pass
 
     def test_api_routes(self):
         # 1. Dashboard HTML (público)
