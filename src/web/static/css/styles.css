@@ -21,3 +21,6 @@
   font-variant-numeric: tabular-nums;
 }
 
+#user-role-badge {
+  white-space: nowrap;
+}

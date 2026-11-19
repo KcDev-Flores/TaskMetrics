@@ -14,6 +14,7 @@ let currentSortKey = "percentage_desc";
 // Control de Sesión y Supabase Auth
 // -----------------------------------------------------------------------------
 let currentUser = null;
+const NAV_TAB_BASE = "nav-tab flex-1 lg:flex-none min-w-0 px-1.5 sm:px-4 py-1.5 rounded-lg text-[10px] sm:text-xs font-semibold transition flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5";
 let availableAreas = [];   // áreas que el usuario puede consultar
 let assignableAreas = [];  // áreas que el admin puede asignar a un líder
 let currentArea = "";      // área consultada (el admin la elige; un líder solo tiene la suya)
@@ -216,10 +217,10 @@ function updateAuthUI() {
     }
     if (roleBadge) {
       if (currentUser.role === "admin") {
-        roleBadge.textContent = "👑 Administrador";
+        roleBadge.innerHTML = '👑 <span class="sm:hidden">Admin</span><span class="hidden sm:inline">Administrador</span>';
         roleBadge.className = "px-1.5 sm:px-2 py-0.5 rounded-md font-semibold text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30";
       } else {
-        roleBadge.textContent = `⭐ Líder · ${areaLabel(currentUser.area) || "sin área"}`;
+        roleBadge.innerHTML = `⭐ <span class="hidden sm:inline">Líder · </span>${escapeHtml(areaLabel(currentUser.area) || "sin área")}`;
         roleBadge.className = "px-1.5 sm:px-2 py-0.5 rounded-md font-semibold text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30";
       }
     }
@@ -367,10 +368,10 @@ function applyActiveTabUI() {
     if (view && btn) {
       if (t === activeTab) {
         view.classList.remove("hidden");
-        btn.className = "nav-tab px-3 sm:px-4 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 text-white bg-slate-800 shadow-sm shrink-0";
+        btn.className = `${NAV_TAB_BASE} text-white bg-slate-800 shadow-sm`;
       } else {
         view.classList.add("hidden");
-        btn.className = "nav-tab px-3 sm:px-4 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 text-slate-400 hover:text-slate-200 shrink-0";
+        btn.className = `${NAV_TAB_BASE} text-slate-400 hover:text-slate-200`;
       }
     }
   });
@@ -538,13 +539,13 @@ function renderMatrixTable(data) {
 
   // Reconstruir Encabezados
   headersRow.innerHTML = `
-    <th class="py-3.5 px-4 font-semibold text-slate-300 bg-slate-950 min-w-[160px]">Integrante</th>
+    <th class="py-3.5 px-4 font-semibold text-slate-300 bg-slate-950 min-w-[120px] sm:min-w-[160px] sticky left-0 z-20">Integrante</th>
   `;
 
   data.sprints.forEach((s) => {
     const sName = data.sprint_names?.[s] || `Sprint ${s}`;
     const th = document.createElement("th");
-    th.className = "py-3.5 px-3 text-center font-semibold text-slate-300 bg-slate-950 min-w-[100px]";
+    th.className = "py-3.5 px-3 text-center font-semibold text-slate-300 bg-slate-950 min-w-[72px] sm:min-w-[100px]";
     th.innerHTML = `
       <div class="flex flex-col items-center">
         <span>Sprint ${s}</span>
@@ -557,7 +558,7 @@ function renderMatrixTable(data) {
   // Columnas fijas finales (con ancho y alineación exacta)
   headersRow.innerHTML += `
     <th class="py-3.5 px-4 text-center font-semibold text-slate-300 bg-slate-950 w-36 whitespace-nowrap">Total Acumulado</th>
-    <th class="py-3.5 px-4 text-left font-semibold text-slate-300 min-w-[220px] bg-slate-950">Participación de Ingresos (%)</th>
+    <th class="py-3.5 px-4 text-left font-semibold text-slate-300 min-w-[160px] sm:min-w-[220px] bg-slate-950">Participación de Ingresos (%)</th>
     <th class="py-3.5 px-4 text-center font-semibold text-slate-400 bg-slate-950 w-28 whitespace-nowrap">Eficacia</th>
   `;
 
@@ -567,8 +568,10 @@ function renderMatrixTable(data) {
     const colSpan = data.sprints.length + 4;
     tbody.innerHTML = `
       <tr>
-        <td colspan="${colSpan}" class="py-12 text-center text-slate-500 text-xs">
-          No hay datos registrados aún. Usa el botón <strong>"⚙️ Acciones"</strong> para registrar integrantes y sprints.
+        <td colspan="${colSpan}" class="py-12 px-4 text-slate-500 text-xs">
+          <div class="sticky left-4 w-[calc(100vw-5rem)] max-w-full mx-auto text-center">
+            No hay datos registrados aún. Usa el botón <strong>"⚙️ Acciones"</strong> para registrar integrantes y sprints.
+          </div>
         </td>
       </tr>
     `;
@@ -581,7 +584,7 @@ function renderMatrixTable(data) {
     tr.className = "hover:bg-slate-900/40 transition";
 
     let cells = `
-      <td class="py-3 px-4 font-medium text-slate-200 min-w-[160px]">
+      <td class="py-3 px-4 font-medium text-slate-200 min-w-[120px] sm:min-w-[160px] sticky left-0 z-[1] bg-slate-900">
         <span class="cursor-pointer hover:text-emerald-400 transition" onclick="switchTab('rendimiento'); openDevHistoryModal('${item.programmer_name}')" title="Ver historial de ${item.programmer_name}">
           ${item.programmer_name}
         </span>
@@ -591,7 +594,7 @@ function renderMatrixTable(data) {
     data.sprints.forEach((s) => {
       const count = item.sprint_tasks[s] ?? 0;
       cells += `
-        <td class="py-3 px-3 text-center text-slate-300 font-mono text-xs min-w-[100px]">
+        <td class="py-3 px-3 text-center text-slate-300 font-mono text-xs min-w-[72px] sm:min-w-[100px]">
           ${count}
         </td>
       `;
@@ -603,7 +606,7 @@ function renderMatrixTable(data) {
       <td class="py-3 px-4 text-center font-bold text-white font-mono w-36">
         ${item.total_accumulated}
       </td>
-      <td class="py-3 px-4 min-w-[220px]">
+      <td class="py-3 px-4 min-w-[160px] sm:min-w-[220px]">
         <div class="flex items-center gap-3">
           <div class="flex-1 bg-slate-800 rounded-full h-2 overflow-hidden">
             <div class="bg-emerald-500 h-2 rounded-full transition-all duration-500" style="width: ${Math.min(item.percentage, 100)}%"></div>
@@ -623,13 +626,13 @@ function renderMatrixTable(data) {
   // Reconstruir Pie
   let foot = `
     <tr>
-      <td class="py-3.5 px-4 text-emerald-400 font-bold uppercase tracking-wider text-xs min-w-[160px]">TOTAL EQUIPO</td>
+      <td class="py-3.5 px-4 text-emerald-400 font-bold uppercase tracking-wider text-xs min-w-[120px] sm:min-w-[160px] sticky left-0 z-[1] bg-slate-950">TOTAL EQUIPO</td>
   `;
 
   data.sprints.forEach((s) => {
     const sTotal = data.sprint_totals[s] ?? 0;
     foot += `
-      <td class="py-3 px-3 text-center text-slate-200 font-bold font-mono text-xs min-w-[100px]">
+      <td class="py-3 px-3 text-center text-slate-200 font-bold font-mono text-xs min-w-[72px] sm:min-w-[100px]">
         ${sTotal}
       </td>
     `;
@@ -640,7 +643,7 @@ function renderMatrixTable(data) {
       <td class="py-3.5 px-4 text-center text-emerald-400 font-bold font-mono w-36">
         ${data.team_total_tasks}
       </td>
-      <td class="py-3.5 px-4 min-w-[220px]">
+      <td class="py-3.5 px-4 min-w-[160px] sm:min-w-[220px]">
         <div class="flex items-center gap-3">
           <div class="flex-1 bg-slate-800 rounded-full h-2 overflow-hidden">
             <div class="bg-emerald-400 h-2 rounded-full" style="width: 100%"></div>
@@ -674,16 +677,16 @@ async function renderSprintsAccordion() {
     card.className = "bg-slate-950/60 border border-slate-800 rounded-xl overflow-hidden shadow-sm";
 
     card.innerHTML = `
-      <div class="p-4 flex items-center justify-between cursor-pointer hover:bg-slate-900/50 transition" onclick="toggleSprintDetails(${s.sprint_number})">
-        <div class="flex items-center gap-3">
-          <span class="px-2.5 py-1 bg-slate-800 text-emerald-400 text-xs font-bold rounded-lg border border-slate-700">
+      <div class="p-4 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 cursor-pointer hover:bg-slate-900/50 transition" onclick="toggleSprintDetails(${s.sprint_number})">
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+          <span class="shrink-0 whitespace-nowrap px-2.5 py-1 bg-slate-800 text-emerald-400 text-xs font-bold rounded-lg border border-slate-700">
             Sprint ${s.sprint_number}
           </span>
           <span class="text-sm font-semibold text-white">${s.name}</span>
-          <span class="text-xs text-slate-500 font-normal">(${s.task_count} tareas)</span>
+          <span class="shrink-0 whitespace-nowrap text-xs text-slate-500 font-normal">(${s.task_count} tareas)</span>
         </div>
-        <div class="flex items-center gap-3">
-          <span class="text-xs px-2.5 py-0.5 rounded-full ${s.status === 'completed' ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800' : 'bg-amber-950/80 text-amber-400 border border-amber-800'}">
+        <div class="flex items-center gap-3 shrink-0 ml-auto">
+          <span class="whitespace-nowrap text-xs px-2.5 py-0.5 rounded-full ${s.status === 'completed' ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800' : 'bg-amber-950/80 text-amber-400 border border-amber-800'}">
             ${s.status === 'completed' ? 'Completado' : 'En progreso'}
           </span>
           <span id="chevron-sprint-${s.sprint_number}" class="text-slate-400 text-sm">▼</span>
@@ -1006,8 +1009,8 @@ function addTaskRow(initialTitle = "", initialStatus = "completed", selectedDevs
   }
 
   row.innerHTML = `
-    <div class="flex items-center justify-between gap-3">
-      <div class="flex-1">
+    <div class="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
+      <div class="w-full sm:w-auto sm:flex-1">
         <input type="text" value="${initialTitle || `Tarea ${taskIndex}`}" class="task-title-input w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:ring-1 focus:ring-emerald-500" placeholder="Nombre de la tarea">
       </div>
       <div class="w-32">
